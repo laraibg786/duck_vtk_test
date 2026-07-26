@@ -161,22 +161,42 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The DEFAULT line. This entry's exclude_archs is the submission-relevant
+          # one and must stay identical to excluded_platforms in
+          # community-extension/description.yml — scripts/submit_check.sh enforces it.
+          #
+          # See docs/CI_NOTES.md §1-2: musl is opt-in on v1.5 but not on v1.4-andium,
+          # so it must be excluded by name or the LTS line builds it regardless.
+          # windows_amd64_mingw: DuckDB's own tools/sqlite3_api_wrapper does not
+          # compile under rtools42 mingw; see description.yml for the full note.
           - duckdb_version: v1.5.5
             ci_tools_version: v1.5-variegata
             vcpkg_commit: 84bab45d415d22042bd0b9081aea57f362da3f35
+            exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw"
+          # The Andium/LTS line, which additionally excludes windows_amd64.
+          #
+          # Same upstream file, different compiler: DuckDB v1.4.5's
+          # tools/sqlite3_api_wrapper/sqlite3_api_wrapper.cpp does not compile under
+          # the current MSVC 14.51 + Windows SDK 10.0.26100 either —
+          #   objidl.h: error C2872: 'byte': ambiguous symbol
+          #     could be 'unsigned char byte' (rpcndr.h) or 'std::byte' (cstddef)
+          # v1.5.5 compiles the same file fine, so this is fixed upstream on the
+          # default line. Our own extension is NOT implicated: the log shows
+          # `Linking CXX static library extension\vtk\vtk_extension.lib` succeeding
+          # at step 361/456, immediately before DuckDB's tool fails at 362.
+          #
+          # This costs nothing at submission time: community-extensions'
+          # build_andium.yml is `if: false`, so the LTS line is not built for a
+          # submission PR at all. Excluding it here keeps our own CI honestly green
+          # instead of permanently red for someone else's bug.
           - duckdb_version: v1.4.5
             ci_tools_version: v1.4-andium
             vcpkg_commit: ce613c41372b23b1f51333815feb3edd87ef8a8b
+            exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw;windows_amd64"
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
       extension_name: vtk
       duckdb_version: ${{ matrix.duckdb_version }}
       ci_tools_version: ${{ matrix.ci_tools_version }}
-      # See docs/CI_NOTES.md §1-2: musl is opt-in on v1.5 but not on v1.4-andium,
-      # so it must be excluded by name or the LTS line builds it regardless.
-      #
-      # windows_amd64_mingw: DuckDB's own tools/sqlite3_api_wrapper does not compile
-      # under rtools42 mingw (std::byte vs. windows.h `byte`). See the fuller note in
-      # community-extension/description.yml, which this must stay in step with.
-      exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw"
+      exclude_archs: ${{ matrix.exclude_archs }}
       vcpkg_commit: ${{ matrix.vcpkg_commit }}

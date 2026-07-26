@@ -28,6 +28,18 @@ step() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 PY=python3
 command -v "$PY" >/dev/null 2>&1 || { echo "python3 required"; exit 2; }
 
+# A python that can actually import yaml. Debian's python3 has no pyyaml, so fall
+# back to an ad-hoc uvx environment — the same escalation the descriptor parse does
+# below, hoisted here so later checks can reuse it. Empty if neither works, in which
+# case YAML-dependent checks warn rather than fail.
+YAML_PY=""
+if "$PY" -c "import yaml" 2>/dev/null; then
+  YAML_PY="$PY"
+elif command -v uvx >/dev/null 2>&1 \
+     && uvx --quiet --with pyyaml python -c "import yaml" 2>/dev/null; then
+  YAML_PY="uvx --quiet --with pyyaml python"
+fi
+
 step "Descriptor exists and parses"
 [[ -f "$DESC" ]] || { bad "$DESC missing"; exit 1; }
 # NOTE: capture the status explicitly rather than `if ! cmd`. With `!`, bash
@@ -72,15 +84,48 @@ grep -qE "^\s+github:" "$DESC" && ok "repo.github" || bad "missing repo.github"
 grep -qE "^\s+ref:" "$DESC"    && ok "repo.ref"    || bad "missing repo.ref"
 
 step "Excluded platforms agree between descriptor and CI"
+# The descriptor must match the DEFAULT DuckDB line's exclude_archs, because that is
+# the only line community-extensions builds for a submission (their build_andium.yml
+# is `if: false`). Other matrix entries may legitimately exclude MORE — the LTS line
+# excludes windows_amd64 because DuckDB v1.4.5's own sqlite3_api_wrapper does not
+# compile under the current MSVC. An earlier version of this check unioned every
+# exclude_archs in the file, which cannot express that and would fail here.
 desc_ex=$(grep -oP 'excluded_platforms:\s*"\K[^"]+' "$DESC" | tr ';' '\n' | sort -u)
-ci_ex=$(grep -oP 'exclude_archs:\s*"\K[^"]+' "$CI" | tr ';' '\n' | sort -u)
+ci_default_ex=$(${YAML_PY:-false} - "$CI" <<'PY' 2>/dev/null
+import sys, yaml
+DEFAULT_LINE = "v1.5.5"
+with open(sys.argv[1]) as fh:
+    wf = yaml.safe_load(fh)
+entries = wf["jobs"]["distribution"]["strategy"]["matrix"]["include"]
+for e in entries:
+    if e.get("duckdb_version") == DEFAULT_LINE:
+        print("\n".join(sorted(set(e["exclude_archs"].split(";")))))
+        break
+PY
+)
 if [[ -z "$desc_ex" ]]; then
   bad "could not read excluded_platforms from $DESC"
-elif [[ "$desc_ex" == "$ci_ex" ]]; then
-  ok "$(wc -l <<<"$desc_ex") platforms excluded, identical in both"
+elif [[ -z "$YAML_PY" ]]; then
+  warn "no YAML parser available; skipped the descriptor/CI exclusion comparison"
+elif [[ "$desc_ex" == "$ci_default_ex" ]]; then
+  ok "$(wc -l <<<"$desc_ex") platforms excluded, descriptor matches the default line"
+  # Report per-line extras so a divergence is visible rather than silent.
+  ${YAML_PY:-false} - "$CI" <<'PY' 2>/dev/null
+import sys, yaml
+with open(sys.argv[1]) as fh:
+    wf = yaml.safe_load(fh)
+base = None
+for e in wf["jobs"]["distribution"]["strategy"]["matrix"]["include"]:
+    if e.get("duckdb_version") == "v1.5.5":
+        base = set(e["exclude_archs"].split(";"))
+for e in wf["jobs"]["distribution"]["strategy"]["matrix"]["include"]:
+    extra = set(e["exclude_archs"].split(";")) - (base or set())
+    if extra:
+        print(f"       note: {e['duckdb_version']} also excludes {';'.join(sorted(extra))}")
+PY
 else
-  bad "excluded_platforms and exclude_archs differ:"
-  diff <(echo "$desc_ex") <(echo "$ci_ex") | sed 's/^/       /'
+  bad "excluded_platforms and the default line's exclude_archs differ:"
+  diff <(echo "$desc_ex") <(echo "$ci_default_ex") | sed 's/^/       /'
 fi
 
 step "vcpkg manifest and overlay port"
