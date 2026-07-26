@@ -287,12 +287,18 @@ ci-verify-apt:
 		-e VTK_MODE=apt \
 		$(DOCKER_IMAGE_CI)-apt
 
+## Build through vcpkg exactly as community-extensions does, using our vtk-minimal
+## overlay port. THE most important pre-submission check: it is the only thing that
+## exercises the vcpkg plumbing around the port. Slow (clones vcpkg, builds VTK).
+ci-verify-vcpkg:
+	./scripts/verify_vcpkg_port.sh $(VCPKG_COMMIT)
+
 ## Drop into a shell in the CI container to debug a failure.
 ci-shell: ci-image
 	docker run --rm -it --entrypoint /bin/bash \
 		-v $(PROJ_DIR):/src:ro -v $(DOCKER_CCACHE):/ccache $(DOCKER_IMAGE_CI)
 
-.PHONY: ci-image ci-verify ci-verify-apt ci-shell
+.PHONY: ci-image ci-verify ci-verify-apt ci-verify-vcpkg ci-shell
 
 ## Pre-submission paperwork gate for DuckDB community extensions. Runs offline in
 ## about a second; does not build. Pair with `make ci-verify` and `make check`.

@@ -28,23 +28,25 @@ extension:
   build: cmake
   license: MIT
 
-  # Platform scope for the first submission.
+  # Platform scope.
   #
-  # Every non-excluded platform builds VTK from source through our vtk-minimal
-  # vcpkg overlay port. That is minutes per platform rather than the hours the
-  # upstream vcpkg `vtk` port would take, but it is still real work, and VTK does
-  # not build meaningfully on wasm at all. Linux is also the only target that can
-  # be verified locally here (see `make ci-verify`), and shipping a platform
-  # nobody has ever built is how submissions get reverted.
+  # Only wasm is excluded, and permanently: VTK does not build meaningfully under
+  # Emscripten, so there is nothing to gain by trying.
   #
-  # Excluded, with the specific reason:
-  #   osx_*            VTK builds fine, but cannot be verified from this machine
-  #   windows_*        needs an MSVC VTK build; src/ also uses POSIX stat()
-  #   wasm_*           VTK is not viable under Emscripten
-  #   linux_*_musl     needs a fully static VTK against musl; untested
+  # Everything else is claimed, but with an honest caveat: linux_amd64 is the only
+  # target that has been built and tested on the development machine. The rest rely
+  # on CI, which runs the SAME reusable workflow community-extensions uses
+  # (.github/workflows/ci.yml, `distribution` job) — so a green CI here is the same
+  # evidence their pipeline would produce. Do not submit until that job is green.
   #
-  # Widen this list one platform at a time, each with a green build behind it.
-  excluded_platforms: "osx_amd64;osx_arm64;windows_amd64;windows_arm64;windows_amd64_mingw;windows_amd64_rtools;wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl"
+  # Known per-platform risks, in rough order:
+  #   linux_arm64        cross-compiled VTK via vcpkg; expected to work, slow
+  #   osx_amd64/arm64    VTK builds cleanly on macOS; untestable locally
+  #   windows_*          MSVC VTK build; our code is POSIX-free (std::filesystem)
+  #                      but the template-heavy column writer may need /bigobj
+  #   linux_*_musl       needs a fully static VTK; VTK's factory registration and
+  #                      loguru can be awkward against musl
+  excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads"
 
   maintainers:
     # TODO: replace with the maintainer's GitHub username(s) before submitting.
@@ -58,7 +60,10 @@ repo:
 
 docs:
   hello_world: |
-    -- Attach a VTK mesh and explore it with plain SQL.
+    -- Remote files work through DuckDB's filesystem, so httpfs is needed for https.
+    INSTALL httpfs; LOAD httpfs;
+
+    -- Attach a VTK mesh and explore it with plain SQL. A local path works too.
     ATTACH 'https://raw.githubusercontent.com/Kitware/vtk-examples/master/src/Testing/Data/uGridEx.vtk' AS mesh (TYPE vtk);
 
     -- What is in the file? Start here on anything unfamiliar.
@@ -125,8 +130,16 @@ docs:
     importers (ExodusII, CGNS, VTKHDF) are recognised and rejected with a clear
     message rather than partially read; they are planned.
 
+    ### Remote files
+
+    Reads go through DuckDB's virtual filesystem, so `https://`, `s3://`, `gs://`
+    and `az://` all work once the matching extension is loaded (`httpfs`, `azure`).
+    There is no dependency on those extensions — the extension simply does not
+    bypass the VFS.
+
     ### Current limitations
 
-    Read-only. The whole dataset is loaded into memory at `ATTACH`. Scans are
-    single-threaded and there is no filter pushdown (projection pushdown is
-    implemented).
+    Read-only. The whole dataset is loaded into memory at `ATTACH`; for a remote
+    object that means downloading it in full, as VTK cannot parse incrementally.
+    Scans are single-threaded and there is no filter pushdown (projection pushdown
+    is implemented).

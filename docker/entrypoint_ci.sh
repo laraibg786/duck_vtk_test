@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Cold-boot build + test of duck_vtk inside the CI container.
 #
-# Mirrors what the DuckDB community-extensions pipeline does, minus vcpkg (which
-# needs network access to a pinned vcpkg checkout; `make ci-verify-vcpkg` covers
-# that separately). What this proves:
+# Mirrors what the DuckDB community-extensions pipeline does, minus vcpkg — that is
+# covered by `make ci-verify-vcpkg`, which clones the pinned vcpkg and builds VTK
+# through our overlay port. What THIS proves:
 #
 #   * the repo builds from a CLONE, not from the developer's working tree, so an
 #     uncommitted file cannot make the build look healthy
