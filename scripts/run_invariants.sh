@@ -100,7 +100,7 @@ echo
 while IFS= read -r f; do
   [[ -n "$FILTER" && "$f" != *"$FILTER"* ]] && continue
   case "$(basename "$f")" in
-    truncated.vtk|not_really.vtk|bad_type.vtu) continue ;;  # expected-error fixtures
+    truncated.vtk|not_really.vtk|bad_type.vtu|bad_ascii_nan.vtk) continue ;;  # expected-error fixtures
   esac
   run_invariants_for "$f" "$f"
   case $? in

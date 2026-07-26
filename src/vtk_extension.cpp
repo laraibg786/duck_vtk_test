@@ -8,6 +8,7 @@
 
 // VTK. Only what Phase 1 needs: enough to prove the library is linked,
 // initialised, and callable from inside a dlopen'd DuckDB module.
+#include "catalog/vtk_catalog.hpp"
 #include "functions/vtk_table_functions.hpp"
 #include "vtk/vtk_error_scope.hpp"
 
@@ -67,11 +68,9 @@ void LoadInternal(ExtensionLoader &loader) {
 		loader.RegisterFunction(fn);
 	}
 
-	// Phase 3 registers the storage extension here, via
-	//   auto &db = loader.GetDatabaseInstance();
-	//   StorageExtension::Register(DBConfig::GetConfig(db), "vtk", ...);
-	// Note StorageExtension::Register takes a shared_ptr, and
-	// DBConfig::storage_extensions is no longer a public member in v1.5.4.
+	// ATTACH '<file>' AS m (TYPE vtk). The registration API differs between
+	// DuckDB 1.4 and 1.5; VtkRegisterStorageExtension contains the single shim.
+	VtkRegisterStorageExtension(loader.GetDatabaseInstance());
 }
 
 void VtkExtension::Load(ExtensionLoader &loader) {
