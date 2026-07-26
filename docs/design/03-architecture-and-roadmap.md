@@ -67,55 +67,41 @@ The one thing to get right, because it determines thread-safety:
 
 ```
 duck_vtk/
-├── CMakeLists.txt              # extension build; find_package(VTK), links both targets
-├── Makefile                    # thin wrapper over extension-ci-tools
-├── extension_config.cmake      # duckdb_extension_load(vtk ...)
-├── .clang-format               # copied from extension-template (duckdb house style)
-├── .clang-tidy
-├── duckdb/                     # submodule, pinned to 08e34c447b (== v1.5.4)
-├── extension-ci-tools/         # submodule, pinned to b777c70d
+├── CMakeLists.txt              # extension build; VTK, optimisation, API probe
+├── Makefile                    # configure / release / test / install / check
+├── extension_config.cmake
 ├── cmake/
-│   └── DuckVTKFindVTK.cmake   # VTK discovery + component list + RPATH dir
+│   ├── DuckVTKFindVTK.cmake    # VTK discovery, component list, RPATH dir
+│   └── DuckVTKOptimize.cmake   # compiler flags; opt-in LTO/native/asan/werror
+├── duckdb/                     # submodule, pinned (v1.5.4 or v1.4.x LTS)
+├── extension-ci-tools/         # submodule, pinned
 ├── src/
-│   ├── vtk_extension.cpp       # DUCKDB_CPP_EXTENSION_ENTRY, registration
-│   ├── vtk/                    # L1
-│   │   ├── vtk_reader_factory.cpp
-│   │   ├── vtk_dataset.cpp
-│   │   └── vtk_error_scope.cpp
-│   ├── model/                  # L2
-│   │   ├── vtk_type_mapping.cpp
-│   │   ├── vtk_table_schema.cpp
-│   │   ├── vtk_column_writer.cpp
-│   │   └── vtk_cell_types.cpp
-│   ├── functions/              # L3
-│   │   ├── vtk_points_function.cpp
-│   │   ├── vtk_cells_function.cpp
-│   │   ├── vtk_cell_points_function.cpp
-│   │   ├── vtk_field_data_function.cpp
-│   │   ├── vtk_arrays_function.cpp
-│   │   └── vtk_info_function.cpp
-│   ├── catalog/                # L4
-│   │   ├── vtk_storage_extension.cpp
-│   │   ├── vtk_catalog.cpp
-│   │   ├── vtk_schema_entry.cpp
-│   │   ├── vtk_table_entry.cpp
-│   │   └── vtk_transaction_manager.cpp
-│   └── include/                # mirrors the above, one .hpp per .cpp
+│   ├── vtk_extension.cpp                 # entrypoint + registration
+│   ├── vtk/vtk_error_scope.cpp           # L1 — output-window capture (load-bearing)
+│   ├── vtk/vtk_dataset.cpp               # L1 — reader factory + uniform accessors
+│   ├── model/vtk_types.cpp               # L2 — type mapping + cell-type table
+│   ├── model/vtk_table_schema.cpp        # L2 — six schemas + collision policy
+│   ├── model/vtk_column_writer.cpp       # L2 — typed array -> Vector
+│   ├── functions/vtk_table_functions.cpp # L3 — all six tables + debug dump
+│   ├── catalog/vtk_catalog.cpp           # L4 — catalog/schema/table/txn manager
+│   └── include/                          # mirrors the above
 ├── test/
-│   ├── data/                   # corpus, COMMITTED (17 MB) + MANIFEST.sha256
-│   ├── sql/*.test              # sqllogictest
-│   └── cpp/*.cpp               # Catch2
+│   ├── data/                   # 79-file corpus, COMMITTED, + MANIFEST.sha256
+│   └── sql/*.test              # sqllogictest
 ├── scripts/
-│   ├── setup_dev_env.sh        # toolchain + python venv for the oracle
-│   ├── build_minimal_vtk.sh    # minimal VTK source build (the default VTK path)
-│   ├── phase0_spike/           # ABI/toolchain go-no-go spike
-│   ├── smoke.sh
-│   ├── validate_against_vtk.py
-│   └── run_invariants.sh
-└── docs/
-    ├── design/                 # this directory — normative decisions
-    └── research/               # API references produced by research agents
+│   ├── configure.sh            # `make configure` — one-command setup
+│   ├── install_extension.sh    # `make install`
+│   ├── build_minimal_vtk.sh    # the default VTK path
+│   ├── smoke.sh, run_invariants.sh, validate_against_vtk.py, python_smoke.py
+│   └── phase0_spike/           # toolchain go/no-go spike
+├── .github/workflows/ci.yml    # v1.5.4 + v1.4.5 LTS + clang matrix
+└── docs/{design,research}/
 ```
+
+Note the file count is lower than originally planned: the six table functions share
+one translation unit because they share the scan loop, bind helper and emitters,
+and the reader factory lives with `VtkDataset` because the two are tightly coupled.
+Splitting either would duplicate machinery rather than separate concerns.
 
 Header layout follows duckdb's own convention: `src/include/<subdir>/<name>.hpp`, included as `"vtk/vtk_dataset.hpp"`, with `include_directories(src/include)`.
 

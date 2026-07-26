@@ -180,7 +180,13 @@ Research doc 03 was written before VTK finished installing, so it cites docs rat
 
 ---
 
-### Phase 1 — Extension skeleton that loads (gate: `vtk_version()` works in the system CLI)
+### Phase 1 — Extension skeleton that loads — ✅ **DONE**
+
+> `make release` produces an extension that loads into the system `duckdb v1.5.4` and
+> reports `VTK 9.6.2; sizeof(vtkIdType)=8; 64bit_ids=yes`. Confirmed:
+> `CMAKE_CXX_STANDARD=17` in the cache, RUNPATH resolving with `LD_LIBRARY_PATH=""`.
+> This phase also surfaced the mandatory `OVERRIDE_GIT_DESCRIBE` (see §3.6) —
+> without it the extension links perfectly and fails only at `LOAD`.
 
 1. Create the submodules at the pinned commits (`setup_dev_env.sh` does this; verify the pin).
 2. Copy `.clang-format` and `.clang-tidy` from `extension-template` so formatting matches DuckDB house style.
@@ -194,7 +200,12 @@ Research doc 03 was written before VTK finished installing, so it cites docs rat
 
 ---
 
-### Phase 2 — Table functions over real data (gate: oracle reports 0 mismatches)
+### Phase 2 — Table functions over real data — ✅ **DONE**
+
+> All 67 readable corpus files pass; the 4 negative fixtures are rejected. Values match
+> the hand-derived ground truth in research doc 04 §4 exactly. See the Phase-2 commit
+> message for the four silent-data-loss bugs this phase surfaced (vtkDataReader's
+> ReadAll* flags defaulting to off being the worst).
 
 This is where correctness is actually established, deliberately before any catalog work. Build L1 → L2 → L3 (architecture doc §2).
 
@@ -237,7 +248,12 @@ Six table functions plus a debug one, each `f(path VARCHAR)`:
 
 ---
 
-### Phase 3 — ATTACH (gate: the 10 acceptance queries run)
+### Phase 3 — ATTACH — ✅ **DONE**
+
+> `ATTACH ... (TYPE vtk)` works; all six tables appear in `duckdb_tables()`,
+> `SHOW ALL TABLES`, `DESCRIBE` and `information_schema`; all write paths refuse
+> without crashing; 65 files × 15 SQL invariants pass. Builds against both DuckDB
+> 1.5.x and 1.4.x LTS via a configure-time header probe.
 
 Build L4 on Phase 2's functions. Follow research doc 02's skeleton, checked against the §3.4 pure-virtual checklist.
 
@@ -251,7 +267,13 @@ Build L4 on Phase 2's functions. Follow research doc 02's skeleton, checked agai
 
 ---
 
-### Phase 4 — Tests, docs, CI
+### Phase 4 — Tests, docs, CI — ✅ **DONE**
+
+> 10 sqllogictest files / 552 assertions, invariant runner, oracle harness, Python
+> client smoke test, README, LICENSE, and a CI matrix over DuckDB 1.5.4 + 1.4.5 LTS
+> + clang.
+
+### Phase 4 (original text) — Tests, docs, CI
 
 Write the full L2 suite and the L3/L4 harnesses per design doc 02 §5–7. `scripts/validate_against_vtk.py` and `scripts/run_invariants.sh` need writing. Then `README.md`: install, the six tables, the type mapping, and the Phase-1 limitations from design §9 stated plainly.
 
