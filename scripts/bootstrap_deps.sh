@@ -32,10 +32,26 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Keep in step with .gitmodules, the Makefile's DUCKDB_VERSION_TAG, and
-# community-extension/description.yml.
-DUCKDB_SHA="${DUCKDB_SHA:-d8cdaa33fda8df955cc76ef58a280f68f4cd43fa}"        # v1.5.5
-CITOOLS_SHA="${CITOOLS_SHA:-72e76e99cd7fee45a99739cd118ec2db64e034ec}"      # v1.5-variegata
+# Which commit to fetch, derived from the gitlink the repo already records rather
+# than hardcoded a second time.
+#
+# This mattered: the two disagreed. The gitlink pinned duckdb at 08e34c44 (v1.5.4)
+# while the hardcoded default here said d8cdaa33 (v1.5.5), and because bootstrap()
+# below PREFERS `git submodule update` when .gitmodules is present, the version you
+# got depended on how you obtained the repo — a git clone built v1.5.4, a tarball
+# export built v1.5.5. Both are supported versions, so nothing failed; it was just
+# silently inconsistent, including in the version tag stamped into the extension.
+#
+# Deriving removes the class of bug. The literals remain only as a fallback for a
+# source export with no git metadata, where `git ls-tree` cannot work.
+gitlink_sha() {
+	git ls-tree HEAD "$1" 2>/dev/null | awk '$2 == "commit" { print $3 }'
+}
+
+DUCKDB_SHA="${DUCKDB_SHA:-$(gitlink_sha duckdb)}"
+CITOOLS_SHA="${CITOOLS_SHA:-$(gitlink_sha extension-ci-tools)}"
+: "${DUCKDB_SHA:=d8cdaa33fda8df955cc76ef58a280f68f4cd43fa}"   # v1.5.5, export fallback
+: "${CITOOLS_SHA:=72e76e99cd7fee45a99739cd118ec2db64e034ec}"  # v1.5-variegata
 
 # Optional local mirrors, used INSTEAD of GitHub when set.
 #
