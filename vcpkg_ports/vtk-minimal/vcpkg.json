@@ -2,27 +2,19 @@
   "name": "vtk-minimal",
   "version": "9.6.2",
   "port-version": 0,
-  "description": [
-    "VTK built with ONLY the modules duck_vtk needs to read mesh files.",
-    "",
-    "This exists because vcpkg's official `vtk` port is unusable for a database",
-    "extension: it carries 26 transitive dependencies (glew, freetype, gl2ps, qt,",
-    "hdf5, netcdf, proj, ...) because rendering is part of its BASE port rather",
-    "than an optional feature. Building that in CI takes hours per platform and",
-    "produces a binary bloated with an OpenGL stack that a SQL engine will never",
-    "call.",
-    "",
-    "This port disables rendering, Qt, Python, MPI, imaging, views and testing",
-    "using upstream VTK's own documented CMake options. No source is patched, so",
-    "there is nothing to re-base when VTK is upgraded — only a version and hash.",
-    "The resulting closure is 3 dependencies instead of 26."
-  ],
+  "description": "VTK with only the modules duck_vtk needs to read mesh files. Rendering, Qt, Python, MPI, imaging and testing are disabled via upstream CMake options, reducing the dependency closure from 26 to 3. See portfile.cmake.",
   "homepage": "https://vtk.org",
   "license": "BSD-3-Clause",
   "supports": "!wasm32 & !android & !ios & !uwp",
   "dependencies": [
-    { "name": "vcpkg-cmake", "host": true },
-    { "name": "vcpkg-cmake-config", "host": true },
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    },
     "expat",
     "lz4",
     "zlib"

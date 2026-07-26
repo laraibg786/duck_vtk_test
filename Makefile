@@ -265,13 +265,22 @@ ci-image:
 
 ## Cold-boot build + full test suite in Docker, building minimal VTK from source.
 ## This is the check to run before submitting to community-extensions.
-# When the local submodules are populated they are mounted as read-only git mirrors,
-# so the container clones the pinned commit locally instead of pulling ~500 MB from
-# GitHub every run. Set CI_VERIFY_NO_MIRROR=1 to force the real network fetch (which
-# is what CI does, since a GitHub runner has the bandwidth for it).
+# When the local submodules are populated, mount them read-only as git mirrors so the
+# container clones the pinned commit locally instead of pulling ~500 MB from GitHub
+# every run. CI_VERIFY_NO_MIRROR=1 forces the real network fetch.
+#
+# Mount the RESOLVED git directory, not the working tree. A submodule's `.git` may be a
+# FILE containing a relative `gitdir: ../.git/modules/<name>` pointer — which is what
+# `git submodule update` produces — and mounting the working tree alone makes that
+# relative path escape the mount:
+#   fatal: not a git repository: /mirror/citools/../.git/modules/extension-ci-tools
+# `rev-parse --absolute-git-dir` yields a real repository path for both shapes.
+DUCKDB_GITDIR  = $(shell git -C duckdb rev-parse --absolute-git-dir 2>/dev/null)
+CITOOLS_GITDIR = $(shell git -C extension-ci-tools rev-parse --absolute-git-dir 2>/dev/null)
+
 CI_MIRROR_ARGS = $(if $(CI_VERIFY_NO_MIRROR),,\
-	$(if $(wildcard duckdb/CMakeLists.txt),-v $(PROJ_DIR)duckdb:/mirror/duckdb:ro -e DUCKDB_GIT_MIRROR=/mirror/duckdb,) \
-	$(if $(wildcard extension-ci-tools/makefiles/duckdb_extension.Makefile),-v $(PROJ_DIR)extension-ci-tools:/mirror/citools:ro -e CITOOLS_GIT_MIRROR=/mirror/citools,))
+	$(if $(DUCKDB_GITDIR),-v $(DUCKDB_GITDIR):/mirror/duckdb.git:ro -e DUCKDB_GIT_MIRROR=/mirror/duckdb.git,) \
+	$(if $(CITOOLS_GITDIR),-v $(CITOOLS_GITDIR):/mirror/citools.git:ro -e CITOOLS_GIT_MIRROR=/mirror/citools.git,))
 
 ci-verify: ci-image
 	docker volume create $(DOCKER_CCACHE) >/dev/null

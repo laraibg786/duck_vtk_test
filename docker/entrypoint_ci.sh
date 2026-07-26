@@ -80,15 +80,16 @@ stage "3. Build (bootstrap must obtain duckdb + ci-tools by itself)"
 # no longer exercises the network fetch — the build and tests are still fully cold.
 if [[ -n "${DUCKDB_GIT_MIRROR:-}" ]]; then
   echo "duckdb source   : local mirror ${DUCKDB_GIT_MIRROR} (network fetch NOT exercised)"
+  # The mirror is a bare-style git directory, so mark it (not a .git child) safe.
   git config --global --add safe.directory "${DUCKDB_GIT_MIRROR}" 2>/dev/null || true
-  git config --global --add safe.directory "${DUCKDB_GIT_MIRROR}/.git" 2>/dev/null || true
 else
   echo "duckdb source   : github (full network fetch, ~500 MB)"
 fi
 if [[ -n "${CITOOLS_GIT_MIRROR:-}" ]]; then
   git config --global --add safe.directory "${CITOOLS_GIT_MIRROR}" 2>/dev/null || true
-  git config --global --add safe.directory "${CITOOLS_GIT_MIRROR}/.git" 2>/dev/null || true
 fi
+# A bind-mounted git directory carries the host's UID, which git refuses to read.
+git config --global --add safe.directory '*' 2>/dev/null || true
 export DUCKDB_GIT_MIRROR CITOOLS_GIT_MIRROR DUCKDB_SHA CITOOLS_SHA
 # No `make configure` on purpose: `make release` alone has to work, because that is
 # all the community-extensions CI runs.
