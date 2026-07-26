@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -60,7 +61,13 @@ SKIP_SUFFIXES = {
 }
 # Synthetic fixtures whose expected outcome is an ERROR, not data. Comparing them
 # elementwise is meaningless; test/sql/degenerate.test asserts their behaviour.
-EXPECT_ERROR = {"truncated.vtk", "not_really.vtk", "bad_type.vtu"}
+#
+# NOTE these are files duck_vtk MUST reject. Python VTK silently accepts the
+# truncated ones (it reports Success and returns uninitialised coordinates — the
+# same behaviour documented in docs/PHASE0_RESULTS.md §4), so the oracle cannot be
+# used to judge them. duck_vtk is deliberately STRICTER than raw VTK here.
+# test/sql/attach_errors.test asserts the rejections instead.
+EXPECT_ERROR = {"truncated.vtk", "not_really.vtk", "bad_type.vtu", "bad_ascii_nan.vtk"}
 
 
 @dataclass
@@ -76,18 +83,48 @@ class Result:
 # --------------------------------------------------------------------------
 
 
+# Concrete XML reader per extension.
+#
+# The oracle may dispatch on the FILE EXTENSION even though duck_vtk itself must
+# dispatch on content (a .vtk-named text file has to be rejected). Two reasons it
+# is fine here: the corpus filenames are known-correct, and CanReadFile is
+# reliable on the CONCRETE readers — it is only broken on
+# vtkXMLGenericDataObjectReader. ReadOutputType would be the content-based
+# alternative, but its `bool &parallel` out-parameter does not wrap into Python
+# ("ReadOutputType argument 2"), so it is unusable from here.
+def _xml_reader_for(suffix: str):
+    import vtk as _v
+    return {
+        ".vtu": _v.vtkXMLUnstructuredGridReader,
+        ".vtp": _v.vtkXMLPolyDataReader,
+        ".vti": _v.vtkXMLImageDataReader,
+        ".vtr": _v.vtkXMLRectilinearGridReader,
+        ".vts": _v.vtkXMLStructuredGridReader,
+    }.get(suffix)
+
+
 def read_with_vtk(path: Path):
-    """Return a vtkDataSet, or raise. Content-based dispatch, mirroring the design."""
+    """Return a vtkDataSet, or raise."""
     suffix = path.suffix.lower()
     if suffix == ".vtk":
         reader = vtk.vtkGenericDataObjectReader()
         reader.SetFileName(str(path))
+        # Match duck_vtk: every ReadAll* flag defaults to OFF, so without these the
+        # oracle would see only the FIRST array of each attribute kind and would
+        # "confirm" a truncated array list.
+        for setter in ("ReadAllScalarsOn", "ReadAllVectorsOn", "ReadAllNormalsOn",
+                       "ReadAllTensorsOn", "ReadAllColorScalarsOn", "ReadAllTCoordsOn",
+                       "ReadAllFieldsOn"):
+            getattr(reader, setter)()
         reader.Update()
         obj = reader.GetOutput()
     else:
-        reader = vtk.vtkXMLGenericDataObjectReader()
+        cls = _xml_reader_for(suffix)
+        if cls is None:
+            raise RuntimeError(f"no oracle reader for {suffix}")
+        reader = cls()
         if not reader.CanReadFile(str(path)):
-            raise RuntimeError(f"vtkXMLGenericDataObjectReader cannot read {path}")
+            raise RuntimeError(f"{cls.__name__} cannot read {path}")
         reader.SetFileName(str(path))
         reader.Update()
         obj = reader.GetOutput()
@@ -171,6 +208,12 @@ def duck_json(duckdb_bin: str, ext: str, sql: str, timeout: int = 300):
     # take the last non-empty one.
     chunks = [c for c in out.split("\n[") if c.strip()]
     text = ("[" + chunks[-1]) if len(chunks) > 1 else out
+    # DuckDB emits bare `nan`, `inf` and `-inf`, which are not valid JSON. Python's
+    # parser accepts the capitalised `NaN`/`Infinity`/`-Infinity` spellings, so
+    # normalise rather than losing the very values nan_inf.vtu exists to check.
+    text = re.sub(r"(?<=[:\[,\s])-inf(?=[,\]}\s])", "-Infinity", text)
+    text = re.sub(r"(?<=[:\[,\s])inf(?=[,\]}\s])", "Infinity", text)
+    text = re.sub(r"(?<=[:\[,\s])nan(?=[,\]}\s])", "NaN", text)
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
@@ -182,7 +225,15 @@ def duck_json(duckdb_bin: str, ext: str, sql: str, timeout: int = 300):
 # --------------------------------------------------------------------------
 
 
-def floats_equal(a, b) -> bool:
+VTK_FLOAT = 10  # vtkType.h — float32
+
+def _as_float32(x):
+    """Round a Python float to the nearest float32, exactly as hardware would."""
+    import struct
+    return struct.unpack("<f", struct.pack("<f", float(x)))[0]
+
+
+def floats_equal(a, b, float32: bool = False) -> bool:
     """Exact, with NaN==NaN and signed-infinity matching.
 
     Exact rather than tolerant: values reach us via JSON (no lossy text round-trip),
@@ -201,11 +252,22 @@ def floats_equal(a, b) -> bool:
         return True
     if math.isinf(fa) or math.isinf(fb):
         return fa == fb
+    if float32:
+        # The array's own type is float32, so float32 IS full precision for it.
+        #
+        # Comparing as double would fail spuriously: the oracle reads via
+        # GetComponent, which widens float32 to double and prints
+        # 71.7343978881836, while DuckDB's JSON writer emits a FLOAT column at
+        # float32 precision as 71.7344. Both are the identical 4-byte value.
+        # Rounding both sides to float32 compares what actually exists.
+        return _as_float32(fa) == _as_float32(fb)
     return fa == fb
 
 
 def compare_file(path: Path, duckdb_bin: str, ext: str, max_diffs: int) -> Result:
     rel = str(path)
+    if path.name in EXPECT_ERROR:
+        return Result(rel, "skip", "expected-error fixture; asserted in attach_errors.test")
     try:
         ds = read_with_vtk(path)
     except Exception as exc:  # noqa: BLE001
@@ -267,18 +329,30 @@ def compare_file(path: Path, duckdb_bin: str, ext: str, max_diffs: int) -> Resul
                 return Result(rel, "fail", "cell mismatch", diffs)
 
     # ---- arrays -----------------------------------------------------------
+    # Map array name -> the column name duck_vtk actually exposes.
+    try:
+        name_map = {
+            (r["association"], r["name"]): r["column_name"]
+            for r in duck_json(duckdb_bin, ext,
+                               f"SELECT association, name, column_name FROM vtk_arrays('{posix}');")
+        }
+    except Exception as exc:  # noqa: BLE001
+        return Result(rel, "error", f"could not read vtk_arrays: {exc}")
+
     for assoc, table, key in (("POINT", "vtk_points", "point_id"), ("CELL", "vtk_cells", "cell_id")):
         expected = oracle_arrays(ds, assoc)
         for name, meta in expected.items():
-            quoted = name.replace('"', '""')
+            column = name_map.get((assoc, name), name)
+            quoted = column.replace('"', '""')
             try:
                 rows = duck_json(
                     duckdb_bin, ext,
                     f'SELECT {key}, "{quoted}" AS v FROM {table}(\'{posix}\') ORDER BY {key};',
                 )
             except Exception as exc:  # noqa: BLE001
-                diffs.append(f"{assoc} array {name!r}: query failed: {exc}")
+                diffs.append(f"{assoc} array {name!r} (column {column!r}): query failed: {exc}")
                 continue
+            is_f32 = meta["dtype"] == VTK_FLOAT
             n = min(len(rows), len(meta["values"]))
             for t in range(n):
                 got_v = rows[t].get("v")
@@ -287,7 +361,7 @@ def compare_file(path: Path, duckdb_bin: str, ext: str, max_diffs: int) -> Resul
                     # ncomp==1 must be a scalar column, never a 1-element list.
                     if isinstance(got_v, list):
                         diffs.append(f"{assoc} {name}[{t}]: got list {got_v!r}, expected scalar")
-                    elif not floats_equal(got_v, exp_v[0]):
+                    elif not floats_equal(got_v, exp_v[0], is_f32):
                         diffs.append(f"{assoc} {name}[{t}]: got {got_v!r} expected {exp_v[0]!r}")
                 else:
                     if not isinstance(got_v, list):
@@ -296,7 +370,7 @@ def compare_file(path: Path, duckdb_bin: str, ext: str, max_diffs: int) -> Resul
                         diffs.append(f"{assoc} {name}[{t}]: got {len(got_v)} components expected {meta['ncomp']}")
                     else:
                         for c, (g, e) in enumerate(zip(got_v, exp_v)):
-                            if not floats_equal(g, e):
+                            if not floats_equal(g, e, is_f32):
                                 diffs.append(f"{assoc} {name}[{t}][{c}]: got {g!r} expected {e!r}")
                 if len(diffs) >= max_diffs:
                     return Result(rel, "fail", "array value mismatch", diffs)
