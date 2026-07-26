@@ -1,0 +1,46 @@
+# name: test/sql/precision.test
+# description: 64-bit integers round-trip EXACTLY.
+#
+#   This is the single most important correctness test in the project. Reading an
+#   integer array through vtkDataArray::GetComponent (which returns `double`) is
+#   correct for every small value and silently WRONG above 2^53 — the worst
+#   possible failure mode, because it looks fine in casual testing. A
+#   GetComponent-based implementation returns 9007199254740992 for the first row.
+# group: [vtk]
+
+require vtk
+
+statement ok
+ATTACH 'test/data/synthetic/int64_precision.vtu' AS m (TYPE vtk);
+
+# Signedness must be preserved: UINT64_MAX does not fit in BIGINT.
+query I
+SELECT sql_type FROM m.vtk_arrays ORDER BY array_index;
+----
+BIGINT
+UBIGINT
+
+query III
+SELECT point_id, big_int64, big_uint64 FROM m.points ORDER BY point_id;
+----
+0	9007199254740993	18446744073709551615
+1	-9007199254740993	9223372036854775808
+2	9223372036854775807	9007199254740993
+3	-9223372036854775808	0
+4	1	1
+
+# Stated as equalities too, so a failure names the exact property that broke.
+query I
+SELECT count(*) FROM m.points WHERE point_id = 0 AND big_int64 = 9007199254740993;
+----
+1
+
+query I
+SELECT count(*) FROM m.points WHERE point_id = 2 AND big_int64 = 9223372036854775807;
+----
+1
+
+query I
+SELECT count(*) FROM m.points WHERE point_id = 0 AND big_uint64 = 18446744073709551615;
+----
+1

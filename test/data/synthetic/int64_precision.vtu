@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="1.0" byte_order="LittleEndian" header_type="UInt64">
+  <UnstructuredGrid>
+    <Piece NumberOfPoints="5" NumberOfCells="5">
+      <PointData>
+        <DataArray type="Int64" Name="big_int64" NumberOfComponents="1" format="binary">
+          KAAAAAAAAAA=AQAAAAAAIAD////////f//////////9/AAAAAAAAAIABAAAAAAAAAA==
+        </DataArray>
+        <DataArray type="UInt64" Name="big_uint64" NumberOfComponents="1" format="binary">
+          KAAAAAAAAAA=//////////8AAAAAAAAAgAEAAAAAACAAAAAAAAAAAAABAAAAAAAAAA==
+        </DataArray>
+      </PointData>
+      <Points>
+        <DataArray type="Float64" NumberOfComponents="3" format="binary">
+          eAAAAAAAAAA=AAAAAAAAAAAAAAAAAADwPwAAAAAAAABAAAAAAAAACEAAAAAAAAAQQAAAAAAAABRAAAAAAAAAGEAAAAAAAAAcQAAAAAAAACBAAAAAAAAAIkAAAAAAAAAkQAAAAAAAACZAAAAAAAAAKEAAAAAAAAAqQAAAAAAAACxA
+        </DataArray>
+      </Points>
+      <Cells>
+        <DataArray type="Int64" Name="connectivity" format="binary">KAAAAAAAAAA=AAAAAAAAAAABAAAAAAAAAAIAAAAAAAAAAwAAAAAAAAAEAAAAAAAAAA==</DataArray>
+        <DataArray type="Int64" Name="offsets" format="binary">KAAAAAAAAAA=AQAAAAAAAAACAAAAAAAAAAMAAAAAAAAABAAAAAAAAAAFAAAAAAAAAA==</DataArray>
+        <DataArray type="UInt8" Name="types" format="binary">BQAAAAAAAAA=AQEBAQE=</DataArray>
+      </Cells>
+    </Piece>
+  </UnstructuredGrid>
+</VTKFile>
