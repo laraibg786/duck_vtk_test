@@ -24,8 +24,14 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1. Fast feedback. Packaged VTK is an older 9.x, so this also proves we are not
-  #    accidentally tied to VTK 9.6.
+  # 1. Fast feedback: compiler matrix (g++/clang), the LTS line, the version shim,
+  #    invariants, corpus integrity and smoke — with VTK cached between runs.
+  #
+  #    This job used to build against the distro's libvtk9-dev to prove we were not
+  #    tied to VTK 9.6. That claim turned out to be false: Ubuntu 24.04's VTK 9.1
+  #    silently returns empty meshes for XML files with an <AppendedData> section,
+  #    so the job was passing while exercising a broken VTK. We are now honestly
+  #    pinned to VTK >= 9.6 and this builds it from source.
   # ---------------------------------------------------------------------------
   quick:
     name: quick (${{ matrix.duckdb_tag }} / ${{ matrix.cxx }})
@@ -65,11 +71,32 @@ jobs:
           submodules: false
 
       - name: Install deps
+        # Deliberately NOT libvtk9-dev. Ubuntu 24.04 ships VTK 9.1, which cannot
+        # read XML files containing an <AppendedData> section: it fails to parse
+        # them, reports GetErrorCode() == Success anyway, and returns an empty
+        # mesh. This job used to run against it and passed for months while
+        # silently exercising a broken VTK; see cmake/DuckVTKFindVTK.cmake.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build ccache libvtk9-dev ${{ matrix.cc }}
-          echo "VTK_DIR=$(dirname $(dpkg -L libvtk9-dev | grep -m1 -E 'VTKConfig.cmake|vtk-config.cmake'))" >> $GITHUB_ENV
+            cmake ninja-build ccache ${{ matrix.cc }}
+
+      # Cache the built VTK tree, not just ccache. The first run pays ~15 minutes;
+      # every later run restores it in seconds, which is what keeps this job quick.
+      # Keyed on the build script so changing the module set rebuilds.
+      - name: Cache minimal VTK
+        id: vtk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/vtk-9.6.2
+          key: vtk-9.6.2-${{ runner.os }}-${{ hashFiles('scripts/build_minimal_vtk.sh') }}
+
+      - name: Build minimal VTK
+        if: steps.vtk-cache.outputs.cache-hit != 'true'
+        run: ./scripts/build_minimal_vtk.sh
+
+      - name: Point the build at it
+        run: echo "VTK_DIR=$HOME/.local/vtk-9.6.2/lib/cmake/vtk-9.6" >> $GITHUB_ENV
 
       - uses: actions/cache@v4
         with:

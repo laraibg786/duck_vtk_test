@@ -27,6 +27,24 @@ const char *const FATAL_SUBSTRINGS[] = {
     "Unable to read",
     "Premature EOF",
     "Cannot read",
+    // XML parse failures. Omitting these was a silent-wrong-results bug: on
+    // Ubuntu 24.04 (VTK 9.1 + expat 2.6.1) every XML file with an
+    // <AppendedData> section fails to parse with
+    //   vtkXMLDataParser: Error parsing XML in stream at line N, ...:
+    //       junk after document element
+    //   vtkXMLReader: Error parsing input file.  ReadXMLInformation aborting.
+    // yet the reader leaves GetErrorCode() at Success and hands back a valid but
+    // EMPTY dataset. duck_vtk then reported a mesh with 0 points and 0 cells
+    // instead of failing — the same failure mode as the truncated legacy file
+    // this list was created for, and the reason it must be checked instead of
+    // GetErrorCode().
+    //
+    // Safe despite the XML probe that runs ahead of a legacy read: that path
+    // calls scope.Clear() before the legacy reader, so a .vtk file does not
+    // inherit the probe's complaint.
+    "Error parsing XML in stream",
+    "Error parsing input file",
+    "ReadXMLInformation aborting",
 };
 
 //! A vtkOutputWindow that appends to a caller-owned vector instead of writing to

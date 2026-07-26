@@ -27,6 +27,23 @@ ATTACH 'test/data/synthetic/bad_type.vtu' AS m (TYPE vtk);
 ----
 duck_vtk: cannot read
 
+# An XML file that fails to parse must FAIL, not produce an empty mesh.
+#
+#   REGRESSION TEST. VTK reports GetErrorCode() == Success for a failed XML parse
+#   and hands back a valid but empty dataset, so this used to attach cleanly and
+#   report a mesh with 0 points and 0 cells. Found on Ubuntu 24.04's VTK 9.1, where
+#   EVERY file with an <AppendedData> section hits this path — cow.vtp read as 0
+#   points instead of 2903. The fixture reproduces it on any VTK version by putting
+#   junk after the root element, which is what 9.1 believes it is seeing.
+#
+#   Fixed by adding the XML parse failures to FATAL_SUBSTRINGS in
+#   src/vtk/vtk_error_scope.cpp. The output-window check, not GetErrorCode(), is
+#   what catches this — the same reason the truncated-legacy-file check exists.
+statement error
+ATTACH 'test/data/synthetic/bad_xml_junk.vtu' AS m (TYPE vtk);
+----
+junk after document element
+
 # Unknown options are rejected so adding real ones later is not a silent change.
 statement error
 ATTACH 'test/data/legacy/uGridEx.vtk' AS m (TYPE vtk, bogus_option 'x');

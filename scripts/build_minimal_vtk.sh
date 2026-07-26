@@ -16,9 +16,11 @@
 #
 # This build is ~54 MB of source and enables no rendering, no Qt, no Python.
 #
-# ALTERNATIVE, if you have root: `sudo apt install libvtk9-dev` gives VTK 9.3,
-# already ABI-matched to Debian's GCC, in ~50 MB. Use that if you prefer; then
-# pass -DVTK_DIR=/usr/lib/x86_64-linux-gnu/cmake/vtk-9.3 to the extension build.
+# DO NOT substitute the distro package. `apt install libvtk9-dev` on Ubuntu 24.04
+# gives VTK 9.1, which cannot read XML files with an <AppendedData> section: it
+# fails to parse them, still reports success, and yields an empty mesh. The build
+# now requires VTK >= 9.6 and will refuse 9.1 outright — see
+# cmake/DuckVTKFindVTK.cmake for the measurement.
 #
 # Usage:  ./scripts/build_minimal_vtk.sh [version] [install_prefix]
 

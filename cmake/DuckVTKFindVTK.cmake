@@ -13,13 +13,34 @@
 
 # Minimum VTK.
 #
-# 9.1 rather than 9.0 because 9.1 is the oldest version actually validated: Ubuntu
-# 24.04 ships it and CI builds against it. The binding constraint is
-# vtkXMLReader's in-memory API — 9.1/9.3 expose only
-# SetInputString(const std::string &), while SetInputArray arrived in 9.6 — so
-# src/vtk/vtk_dataset.cpp deliberately restricts itself to the 9.1 surface.
-# Claiming 9.0 would be asserting something untested.
-set(DUCK_VTK_MIN_VERSION 9.1)
+# 9.6, and this floor is evidence-based rather than cautious. It was 9.1 — on the
+# reasoning that Ubuntu 24.04 ships 9.1 and CI built against it — and that was
+# WRONG: it compiles there and then silently returns empty meshes.
+#
+# What was measured, on Ubuntu 24.04's libvtk9.1t64 (9.1.0+dfsg2):
+#   every XML file containing an <AppendedData> section fails to parse —
+#     vtkXMLDataParser: Error parsing XML in stream at line 32, byte index 2123:
+#         junk after document element
+#     vtkXMLReader:     Error parsing input file.  ReadXMLInformation aborting.
+#   while GetErrorCode() stays at Success and the reader hands back a valid but
+#   EMPTY dataset. test/data/xml/cow.vtp reported 0 points instead of 2903.
+#   Files without an appended section (e.g. vase.vti) read correctly, which is
+#   why this hid for so long: it looks like a per-file problem, not a per-version
+#   one.
+#
+# Appended data is not an edge case — it is what most real XML writers emit — so
+# a VTK that cannot read it is not usable for this extension.
+#
+# 9.6.2 is correct: verified locally, and green through the community-extensions
+# pipeline on linux_amd64 and osx_arm64. 9.2 through 9.5 are UNTESTED; they are
+# excluded because there is no evidence for them, not because they are known bad.
+# If you validate one, lower this and say so here.
+#
+# Note also that src/vtk/vtk_dataset.cpp still restricts itself to the 9.1 API
+# surface for in-memory reads (SetInputString(const std::string &) rather than
+# SetInputArray, which arrived in 9.6). That is deliberate: it costs nothing and
+# keeps the door open to lowering this floor later.
+set(DUCK_VTK_MIN_VERSION 9.6)
 
 # ---------------------------------------------------------------------------
 # Component set
