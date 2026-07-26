@@ -137,5 +137,7 @@ jobs:
       extension_name: vtk
       duckdb_version: ${{ matrix.duckdb_version }}
       ci_tools_version: ${{ matrix.ci_tools_version }}
-      exclude_archs: "wasm_mvp;wasm_eh;wasm_threads"
+      # See docs/CI_NOTES.md §1-2: musl is opt-in on v1.5 but not on v1.4-andium,
+      # so it must be excluded by name or the LTS line builds it regardless.
+      exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl"
       vcpkg_commit: ${{ matrix.vcpkg_commit }}
