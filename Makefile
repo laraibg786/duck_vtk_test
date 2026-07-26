@@ -92,12 +92,22 @@ phase0:
 smoke: release
 	./scripts/smoke.sh
 
-## Elementwise diff of every corpus file against Python VTK (the real oracle)
+## Elementwise diff of every corpus file against Python VTK (the real oracle).
+## Prefers uvx (nothing installed system-wide, globally cached) and falls back to
+## a .venv. Keep this in step with what scripts/configure.sh reports.
+ORACLE_ARGS = scripts/validate_against_vtk.py \
+	--data test/data \
+	--duckdb ./build/release/duckdb \
+	--ext $(EXT_RELEASE_PATH)
+
 oracle: release
-	.venv/bin/python scripts/validate_against_vtk.py \
-		--data test/data \
-		--duckdb ./build/release/duckdb \
-		--ext $(EXT_RELEASE_PATH)
+	@if command -v uvx >/dev/null 2>&1; then \
+		echo "using uvx"; uvx --with vtk --with numpy python $(ORACLE_ARGS); \
+	elif [ -x .venv/bin/python ]; then \
+		echo "using .venv"; .venv/bin/python $(ORACLE_ARGS); \
+	else \
+		echo "FATAL: no uvx and no .venv — run 'make configure'" >&2; exit 2; \
+	fi
 
 ## Run the SQL invariant suite across every corpus file
 invariants: release
