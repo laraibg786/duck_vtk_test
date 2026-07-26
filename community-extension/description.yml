@@ -1,0 +1,132 @@
+# DuckDB community-extensions submission descriptor.
+#
+# HOW TO SUBMIT
+#   1. Fill in the two TODOs below (repo.github and maintainers).
+#   2. Push this repo to GitHub and note the exact commit SHA.
+#   3. Fork github.com/duckdb/community-extensions, copy this file to
+#        extensions/vtk/description.yml
+#      (drop these comments; keep the keys), set repo.ref to that SHA, and open a PR.
+#
+# Their CI then builds this repo from scratch for every non-excluded platform using
+# duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml. It clones
+# the repo with `submodules: recursive`, checks the duckdb submodule out to the
+# target version (`cd duckdb && git checkout v1.5.5`), provides a pinned vcpkg, and
+# runs `make release`. Nothing on the runner is assumed — every dependency must be
+# declared in vcpkg.json.
+#
+# Verify locally BEFORE submitting:
+#   make ci-verify        # cold-boot build in Docker, the same way their CI does it
+#
+# The name `vtk` was unclaimed as of this writing (extensions/vtk 404s upstream);
+# re-check before opening the PR.
+
+extension:
+  name: vtk
+  description: Read VTK mesh files (CAE/CFD/FEA) as relational tables via ATTACH
+  version: 0.1.0
+  language: C++
+  build: cmake
+  license: MIT
+
+  # Platform scope for the first submission.
+  #
+  # Every non-excluded platform builds VTK from source through our vtk-minimal
+  # vcpkg overlay port. That is minutes per platform rather than the hours the
+  # upstream vcpkg `vtk` port would take, but it is still real work, and VTK does
+  # not build meaningfully on wasm at all. Linux is also the only target that can
+  # be verified locally here (see `make ci-verify`), and shipping a platform
+  # nobody has ever built is how submissions get reverted.
+  #
+  # Excluded, with the specific reason:
+  #   osx_*            VTK builds fine, but cannot be verified from this machine
+  #   windows_*        needs an MSVC VTK build; src/ also uses POSIX stat()
+  #   wasm_*           VTK is not viable under Emscripten
+  #   linux_*_musl     needs a fully static VTK against musl; untested
+  #
+  # Widen this list one platform at a time, each with a green build behind it.
+  excluded_platforms: "osx_amd64;osx_arm64;windows_amd64;windows_arm64;windows_amd64_mingw;windows_amd64_rtools;wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl"
+
+  maintainers:
+    # TODO: replace with the maintainer's GitHub username(s) before submitting.
+    - TODO-github-username
+
+repo:
+  # TODO: replace with the published repository, e.g. someorg/duck_vtk
+  github: TODO-owner/duck_vtk
+  # TODO: replace with the exact commit SHA being submitted (not a branch name).
+  ref: TODO-commit-sha
+
+docs:
+  hello_world: |
+    -- Attach a VTK mesh and explore it with plain SQL.
+    ATTACH 'https://raw.githubusercontent.com/Kitware/vtk-examples/master/src/Testing/Data/uGridEx.vtk' AS mesh (TYPE vtk);
+
+    -- What is in the file? Start here on anything unfamiliar.
+    SELECT association, name, sql_type, num_components, num_tuples
+    FROM mesh.vtk_arrays;
+
+    -- Cell-type histogram.
+    SELECT cell_type_name, count(*) AS cells
+    FROM mesh.cells
+    GROUP BY 1 ORDER BY 2 DESC;
+
+    -- Cell centroids: join connectivity to coordinates.
+    SELECT cp.cell_id, avg(p.x) AS cx, avg(p.y) AS cy, avg(p.z) AS cz
+    FROM mesh.cell_points cp
+    JOIN mesh.points p USING (point_id)
+    GROUP BY cp.cell_id
+    ORDER BY cp.cell_id
+    LIMIT 5;
+
+  extended_description: |
+    `vtk` makes [VTK](https://vtk.org) mesh files queryable as relational tables,
+    aimed at CAE/CFD/FEA data where the interesting part is the point-data and
+    cell-data fields attached to a mesh.
+
+    Parsing is done by the **official VTK C++ library** rather than a hand-rolled
+    reader, so legacy and XML formats, ascii/binary/appended/compressed encodings,
+    endianness, and higher-order cells are all handled by upstream VTK.
+
+    ### Tables
+
+    `ATTACH 'mesh.vtu' AS m (TYPE vtk)` exposes six read-only tables:
+
+    | Table | Grain |
+    |---|---|
+    | `points` | one row per point: `point_id`, `x`, `y`, `z`, plus one column per point-data array |
+    | `cells` | one row per cell: `cell_id`, `cell_type`, `cell_type_name`, `num_points`, `point_ids`, plus one column per cell-data array |
+    | `cell_points` | one row per (cell, vertex slot) — the normalised connectivity, for joining cells to coordinates |
+    | `field_data` | dataset-level metadata arrays, long form |
+    | `vtk_arrays` | one row per array: association, name, VTK type, SQL type, components, tuples |
+    | `vtk_info` | one row: counts, bounds, reader and dataset class, versions |
+
+    The same data is also reachable without `ATTACH`, via
+    `vtk_points('f.vtu')`, `vtk_cells(...)`, `vtk_cell_points(...)`,
+    `vtk_field_data(...)`, `vtk_arrays(...)`, `vtk_info(...)` and
+    `vtk_debug_dump(...)`. Both paths share one scan implementation.
+
+    ### Types
+
+    Multi-component arrays become `LIST` columns — `velocity DOUBLE[]` rather than
+    three columns — so 3-vectors, 9-component tensors and arbitrary N all work
+    through one code path. Index with `velocity[1]` (1-based) or `unnest`.
+    Single-component arrays are always scalar columns.
+
+    64-bit integer arrays are read through typed accessors rather than VTK's
+    `double`-returning generic accessor, so values above 2^53 are exact.
+
+    ### Supported formats
+
+    Legacy `.vtk` (ascii and binary; UnstructuredGrid, PolyData, StructuredGrid,
+    StructuredPoints, RectilinearGrid, and field-only `DATASET FIELD`) and XML
+    `.vtu` `.vtp` `.vts` `.vtr` `.vti`.
+
+    Multiblock (`.vtm`), time series (`.pvd`), parallel (`.pvtu`) and the CAE
+    importers (ExodusII, CGNS, VTKHDF) are recognised and rejected with a clear
+    message rather than partially read; they are planned.
+
+    ### Current limitations
+
+    Read-only. The whole dataset is loaded into memory at `ATTACH`. Scans are
+    single-threaded and there is no filter pushdown (projection pushdown is
+    implemented).

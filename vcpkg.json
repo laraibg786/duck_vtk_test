@@ -1,0 +1,27 @@
+{
+  "$comment": [
+    "Dependency manifest for the DuckDB community-extensions build.",
+    "",
+    "Their CI provides a pinned vcpkg and sets VCPKG_TOOLCHAIN_PATH, so every",
+    "third-party library must be declared here rather than found on the system.",
+    "",
+    "vtk-minimal is our own overlay port (vcpkg_ports/vtk-minimal). vcpkg's",
+    "official `vtk` port is unusable here: rendering is in its BASE port, giving 26",
+    "transitive dependencies including glew/freetype/gl2ps/qt. See that port's",
+    "vcpkg.json for the full reasoning."
+  ],
+  "name": "duck-vtk",
+  "version": "0.1.0",
+  "dependencies": [
+    "vtk-minimal"
+  ],
+  "vcpkg-configuration": {
+    "overlay-ports": [
+      "./vcpkg_ports",
+      "./extension-ci-tools/vcpkg_ports"
+    ],
+    "overlay-triplets": [
+      "./extension-ci-tools/toolchains"
+    ]
+  }
+}

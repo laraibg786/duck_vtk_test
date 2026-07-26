@@ -1,0 +1,62 @@
+# Cold-boot, reproducible build of duck_vtk — the same way the DuckDB
+# community-extensions CI does it.
+#
+# PURPOSE
+#   Prove the repo builds from nothing but a git clone on a machine that has none
+#   of this developer's state: no preinstalled VTK, no warm ccache, no
+#   ~/.local/vtk-*, no submodules checked out. Every one of those has silently
+#   propped up a "working" build at some point in this project's history.
+#
+# WHAT IT DELIBERATELY DOES NOT DO
+#   It does not COPY the working tree. It clones the repo inside the image, so a
+#   file that exists only locally and was never committed causes a failure here
+#   rather than a surprise on submission.
+#
+# Base image matches what extension-ci-tools uses for manylinux-ish Linux builds
+# closely enough to be representative, while staying simple enough to debug.
+FROM ubuntu:24.04
+
+ARG DUCKDB_VERSION_TAG=v1.5.5
+ARG VTK_MODE=source
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=UTC
+
+# Toolchain only. Note there is NO vtk package here in the default path: the point
+# is to exercise our own minimal VTK build, which is what CI will do via the
+# vtk-minimal vcpkg port.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        ccache \
+        cmake \
+        curl \
+        git \
+        ninja-build \
+        pkg-config \
+        python3 \
+        python3-venv \
+        tar \
+        zip unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Optional second mode: build against Debian/Ubuntu's packaged VTK instead of
+# building one. Useful for confirming the extension is not secretly tied to VTK
+# 9.6 — libvtk9-dev here is 9.1/9.3 depending on the release.
+RUN if [ "$VTK_MODE" = "apt" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends libvtk9-dev \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+WORKDIR /work
+
+# The repo is cloned, not copied — see the note at the top.
+ARG REPO_URL=/src
+ARG REPO_REF=HEAD
+COPY docker/entrypoint_ci.sh /usr/local/bin/entrypoint_ci.sh
+RUN chmod +x /usr/local/bin/entrypoint_ci.sh
+
+ENV DUCKDB_VERSION_TAG=${DUCKDB_VERSION_TAG} \
+    VTK_MODE=${VTK_MODE} \
+    CCACHE_DIR=/ccache
+
+ENTRYPOINT ["/usr/local/bin/entrypoint_ci.sh"]

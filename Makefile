@@ -39,8 +39,34 @@ EXT_FLAGS += -DENABLE_UNITTEST_CPP_TESTS=TRUE
 #
 # MUST be kept in step with the duckdb submodule pin (08e34c447b == v1.5.4).
 # `make check-pin` verifies the two agree.
-DUCKDB_VERSION_TAG ?= v1.5.4
+# Derived from the duckdb submodule's ACTUAL commit rather than hardcoded, because
+# a hardcoded tag silently drifts from the submodule and the only symptom is an
+# extension that refuses to load. `git describe` cannot be used: the submodule is
+# fetched shallow and carries no tags, which is the very reason
+# OVERRIDE_GIT_DESCRIBE is needed in the first place.
+#
+# Add a line here when bumping the submodule. `make check-pin` fails loudly if the
+# checked-out commit is not in this table, so an unrecorded bump cannot slip
+# through as a mystery load error.
+DUCKDB_KNOWN_VERSIONS := \
+	d8cdaa33fda8df955cc76ef58a280f68f4cd43fa=v1.5.5 \
+	08e34c447bae34eaee3723cac61f2878b6bdf787=v1.5.4 \
+	f31be57c1845a8895169fd58142040be26d433cf=v1.4.5
+
+DUCKDB_SUBMODULE_SHA = $(shell git -C duckdb rev-parse HEAD 2>/dev/null)
+DUCKDB_DERIVED_TAG = $(strip $(patsubst $(DUCKDB_SUBMODULE_SHA)=%,%,\
+	$(filter $(DUCKDB_SUBMODULE_SHA)=%,$(DUCKDB_KNOWN_VERSIONS))))
+
+# Overridable, e.g. `make release DUCKDB_VERSION_TAG=v1.4.5 DUCKDB_SRCDIR=...`.
+DUCKDB_VERSION_TAG ?= $(if $(DUCKDB_DERIVED_TAG),$(DUCKDB_DERIVED_TAG),v1.5.5)
 OVERRIDE_GIT_DESCRIBE ?= $(DUCKDB_VERSION_TAG)
+
+# What the DuckDB community-extensions pipeline actually builds against. Recorded
+# separately from DUCKDB_VERSION_TAG on purpose: their CI checks DuckDB out itself
+# (`cd duckdb && git checkout <version>`), so our submodule pin does NOT decide
+# what they build — it only decides what a LOCAL build produces. These are the
+# versions that must compile; `make check-api-compat` is what proves it.
+COMMUNITY_DUCKDB_VERSIONS := v1.5.5 v1.4.5
 
 # Pin the C++ standard explicitly.
 #
@@ -78,10 +104,20 @@ define _duck_vtk_guard_cache
 	@for d in build/release build/debug build/relassert build/reldebug; do 		if [ -f "$$d/CMakeCache.txt" ]; then 			cached=$$(grep -m1 '^CMAKE_HOME_DIRECTORY:INTERNAL=' "$$d/CMakeCache.txt" | cut -d= -f2-); 			if [ -n "$$cached" ] && [ "$$cached" != "$(DUCKDB_SRC_ABS)" ]; then 				echo "duck_vtk: DuckDB source changed ($$cached -> $(DUCKDB_SRC_ABS)); clearing $$d"; 				rm -rf "$$d"; 			fi; 		fi; 	done
 endef
 
+# Bootstrap the build dependencies if this is a non-recursive clone.
+#
+# GNU make, when an `include`d file is missing, looks for a rule that can create
+# it, runs that rule, and then re-executes itself. So declaring a rule for the
+# included makefile makes `make release` work on a plain `git clone` with no
+# `--recursive` and no separate setup step. See scripts/bootstrap_deps.sh for why
+# this cannot be a CMake FetchContent.
+extension-ci-tools/makefiles/duckdb_extension.Makefile duckdb/CMakeLists.txt:
+	@./scripts/bootstrap_deps.sh
+
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 # Run the guard before any configure-and-build target.
-release debug relassert reldebug: | guard-duckdb-src
+release debug relassert reldebug: | duckdb/CMakeLists.txt guard-duckdb-src
 guard-duckdb-src:
 	$(_duck_vtk_guard_cache)
 .PHONY: guard-duckdb-src
@@ -157,16 +193,27 @@ check-api-compat:
 ## installed CLI is the same build. A drift here produces an extension that
 ## silently refuses to load, so it is worth an explicit check.
 check-pin:
-	@sub=$$(git -C duckdb rev-parse HEAD 2>/dev/null || echo missing); \
+	@sub="$(DUCKDB_SUBMODULE_SHA)"; \
+	if [ -z "$$sub" ]; then \
+	  echo "duckdb submodule not present; run 'make configure' or './scripts/bootstrap_deps.sh'"; exit 1; \
+	fi; \
+	echo "duckdb submodule    : $$sub"; \
+	if [ -z "$(DUCKDB_DERIVED_TAG)" ]; then \
+	  echo "UNRECORDED PIN: that commit is not in DUCKDB_KNOWN_VERSIONS in the Makefile."; \
+	  echo "  The build would stamp the fallback version into the extension's metadata"; \
+	  echo "  footer, and LOAD would fail with a confusing version-mismatch error."; \
+	  echo "  Add '<sha>=<vX.Y.Z>' to DUCKDB_KNOWN_VERSIONS."; \
+	  exit 1; \
+	fi; \
+	echo "derived version tag : $(DUCKDB_VERSION_TAG)"; \
+	echo "community targets   : $(COMMUNITY_DUCKDB_VERSIONS)"; \
 	cli=$$(duckdb --version 2>/dev/null || echo missing); \
-	echo "duckdb submodule : $$sub"; \
-	echo "DUCKDB_VERSION_TAG: $(DUCKDB_VERSION_TAG)"; \
-	echo "system duckdb CLI : $$cli"; \
+	echo "system duckdb CLI   : $$cli"; \
 	case "$$cli" in \
-	  *"$(DUCKDB_VERSION_TAG) "*) echo "OK: CLI version matches DUCKDB_VERSION_TAG" ;; \
-	  missing) echo "WARN: no duckdb on PATH; cannot cross-check" ;; \
-	  *) echo "MISMATCH: CLI is '$$cli' but DUCKDB_VERSION_TAG is $(DUCKDB_VERSION_TAG)."; \
-	     echo "         The built extension will refuse to load into this CLI."; exit 1 ;; \
+	  *"$(DUCKDB_VERSION_TAG) "*) echo "OK: the installed CLI can load a local build" ;; \
+	  missing) echo "note: no duckdb on PATH; cannot cross-check the system load" ;; \
+	  *) echo "note: the installed CLI is a different version from this build, so it"; \
+	     echo "      cannot load the artefact. Not an error - see smoke.sh step 4." ;; \
 	esac
 
 # ---------------------------------------------------------------------------
@@ -199,3 +246,49 @@ python-smoke: install
 	uvx --with duckdb==$(patsubst v%,%,$(DUCKDB_VERSION_TAG)) python scripts/python_smoke.py
 
 .PHONY: python-smoke
+
+# ---------------------------------------------------------------------------
+# Cold-boot verification in Docker
+# ---------------------------------------------------------------------------
+# Reproducible, isolated build with none of this machine's state: no preinstalled
+# VTK, no warm ccache, no checked-out submodules, and the repo CLONED rather than
+# copied so an uncommitted file cannot make the build look healthy.
+
+DOCKER_IMAGE_CI ?= duck-vtk-ci
+DOCKER_CCACHE   ?= duck-vtk-ccache
+
+## Build the CI container image.
+ci-image:
+	docker build -f docker/Dockerfile.ci -t $(DOCKER_IMAGE_CI) \
+		--build-arg DUCKDB_VERSION_TAG=$(DUCKDB_VERSION_TAG) .
+
+## Cold-boot build + full test suite in Docker, building minimal VTK from source.
+## This is the check to run before submitting to community-extensions.
+ci-verify: ci-image
+	docker volume create $(DOCKER_CCACHE) >/dev/null
+	docker run --rm \
+		-v $(PROJ_DIR):/src:ro \
+		-v $(DOCKER_CCACHE):/ccache \
+		-e DUCKDB_VERSION_TAG=$(DUCKDB_VERSION_TAG) \
+		-e VTK_MODE=source \
+		$(DOCKER_IMAGE_CI)
+
+## Same, but against the distro's packaged VTK. Proves we are not secretly tied to
+## VTK 9.6 — Ubuntu's libvtk9-dev is an older 9.x.
+ci-verify-apt:
+	docker build -f docker/Dockerfile.ci -t $(DOCKER_IMAGE_CI)-apt \
+		--build-arg VTK_MODE=apt --build-arg DUCKDB_VERSION_TAG=$(DUCKDB_VERSION_TAG) .
+	docker volume create $(DOCKER_CCACHE) >/dev/null
+	docker run --rm \
+		-v $(PROJ_DIR):/src:ro \
+		-v $(DOCKER_CCACHE):/ccache \
+		-e DUCKDB_VERSION_TAG=$(DUCKDB_VERSION_TAG) \
+		-e VTK_MODE=apt \
+		$(DOCKER_IMAGE_CI)-apt
+
+## Drop into a shell in the CI container to debug a failure.
+ci-shell: ci-image
+	docker run --rm -it --entrypoint /bin/bash \
+		-v $(PROJ_DIR):/src:ro -v $(DOCKER_CCACHE):/ccache $(DOCKER_IMAGE_CI)
+
+.PHONY: ci-image ci-verify ci-verify-apt ci-shell

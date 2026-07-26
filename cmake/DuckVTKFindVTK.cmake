@@ -49,7 +49,19 @@ set(DUCK_VTK_OPTIONAL_COMPONENTS
 # ---------------------------------------------------------------------------
 # Locate a VTK config directory if the user did not specify one
 # ---------------------------------------------------------------------------
-if(NOT DEFINED VTK_DIR OR VTK_DIR STREQUAL "")
+# When building through vcpkg (which is how the DuckDB community-extensions CI
+# builds every extension), VTK comes from our vtk-minimal overlay port and the
+# vcpkg toolchain already puts it on CMAKE_PREFIX_PATH. Probing local prefixes in
+# that case would be actively harmful: it could bind against a system VTK built by
+# a different compiler than the one vcpkg used, which is the ABI hazard this
+# project went out of its way to eliminate. So when vcpkg is in play, let
+# find_package resolve it and do not guess.
+if(DEFINED VCPKG_TOOLCHAIN OR DEFINED ENV{VCPKG_TOOLCHAIN_PATH} OR DEFINED VCPKG_TARGET_TRIPLET)
+  set(DUCK_VTK_VIA_VCPKG TRUE)
+  message(STATUS "duck_vtk: vcpkg detected — VTK will be resolved by the toolchain (vtk-minimal port)")
+endif()
+
+if(NOT DUCK_VTK_VIA_VCPKG AND (NOT DEFINED VTK_DIR OR VTK_DIR STREQUAL ""))
   # Candidate prefixes in priority order. The minimal source build from
   # scripts/build_minimal_vtk.sh comes FIRST because it is this project's
   # documented default (see architecture doc §5): it is ABI-matched to the
@@ -88,6 +100,8 @@ if(NOT VTK_FOUND)
     "duck_vtk: could not find VTK >= 9.0 with the required components.\n"
     "  Required: ${DUCK_VTK_REQUIRED_COMPONENTS}\n"
     "  Tried VTK_DIR='${VTK_DIR}'\n"
+    "\n"
+    "  (vcpkg in use: ${DUCK_VTK_VIA_VCPKG} — if TRUE, check that vtk-minimal built)\n"
     "\n"
     "Install one of the following, then re-run:\n"
     "  * RECOMMENDED, no root needed, ABI-matched to your compiler:\n"

@@ -1,9 +1,16 @@
 name: CI
 
-# Deliberately builds against BOTH the DuckDB LTS line and current, because the
-# only API difference between them (storage-extension registration) is detected at
-# configure time by reading the real header — and a capability probe is only
-# trustworthy if something actually exercises both branches.
+# Three layers, cheapest first:
+#
+#   1. quick        — fast feedback on every push, using the distro's packaged VTK.
+#   2. cold-boot    — Docker build from a CLONE with none of a developer's state.
+#   3. distribution — the ACTUAL DuckDB community-extensions pipeline, by calling
+#                     their reusable workflow with the same inputs they use.
+#
+# Layer 3 is the one that matters for submission. Running it here means a green CI
+# on this repo implies a green build in community-extensions, rather than us
+# guessing. It also builds VTK from source through our vtk-minimal vcpkg overlay
+# port, which is the part most likely to break and the part nothing else exercises.
 
 on:
   push:
@@ -16,72 +23,70 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: ${{ matrix.duckdb_tag }} / ${{ matrix.cxx }}
+  # ---------------------------------------------------------------------------
+  # 1. Fast feedback. Packaged VTK is an older 9.x, so this also proves we are not
+  #    accidentally tied to VTK 9.6.
+  # ---------------------------------------------------------------------------
+  quick:
+    name: quick (${{ matrix.duckdb_tag }} / ${{ matrix.cxx }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Current release.
-          - duckdb_tag: v1.5.4
+          - duckdb_tag: v1.5.5
+            duckdb_sha: d8cdaa33fda8df955cc76ef58a280f68f4cd43fa
+            citools_sha: 72e76e99cd7fee45a99739cd118ec2db64e034ec
             cc: gcc-14
             cxx: g++-14
-          # LTS line. If this breaks, the version shim in
-          # VtkRegisterStorageExtension is what to look at.
+          # The Andium/LTS line. Keeping this green is what caught a CREATE INDEX
+          # crash that 1.5.x masks.
           - duckdb_tag: v1.4.5
+            duckdb_sha: f31be57c1845a8895169fd58142040be26d433cf
+            citools_sha: 1f04702aae6f4e7ab45f38689fd79e765221b19e
             cc: gcc-14
             cxx: g++-14
-          # A second compiler, to catch GCC-only assumptions.
-          - duckdb_tag: v1.5.4
+          - duckdb_tag: v1.5.5
+            duckdb_sha: d8cdaa33fda8df955cc76ef58a280f68f4cd43fa
+            citools_sha: 72e76e99cd7fee45a99739cd118ec2db64e034ec
             cc: clang
             cxx: clang++
-
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
       DUCKDB_VERSION_TAG: ${{ matrix.duckdb_tag }}
-
+      DUCKDB_SHA: ${{ matrix.duckdb_sha }}
+      CITOOLS_SHA: ${{ matrix.citools_sha }}
     steps:
       - uses: actions/checkout@v4
+        # NOT recursive, on purpose: this exercises scripts/bootstrap_deps.sh, so a
+        # plain clone is proven to build.
+        with:
+          submodules: false
 
-      - name: Install build deps
+      - name: Install deps
         run: |
           sudo apt-get update
-          # Debian/Ubuntu's libvtk9-dev is ABI-matched to the system compiler and
-          # is ~50 MB, versus a multi-GB Homebrew bottle or an hour-long source
-          # build. Ideal for CI.
           sudo apt-get install -y --no-install-recommends \
             cmake ninja-build ccache libvtk9-dev ${{ matrix.cc }}
-          echo "VTK_DIR=$(dirname $(dpkg -L libvtk9-dev | grep -m1 'VTKConfig.cmake\|vtk-config.cmake'))" >> $GITHUB_ENV
+          echo "VTK_DIR=$(dirname $(dpkg -L libvtk9-dev | grep -m1 -E 'VTKConfig.cmake|vtk-config.cmake'))" >> $GITHUB_ENV
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
-          key: ccache-${{ matrix.duckdb_tag }}-${{ matrix.cxx }}-${{ github.sha }}
-          restore-keys: ccache-${{ matrix.duckdb_tag }}-${{ matrix.cxx }}-
+          key: ccache-quick-${{ matrix.duckdb_tag }}-${{ matrix.cxx }}-${{ github.sha }}
+          restore-keys: ccache-quick-${{ matrix.duckdb_tag }}-${{ matrix.cxx }}-
 
-      - name: Fetch pinned DuckDB
-        run: ./scripts/configure.sh
-        env:
-          # configure.sh defaults to the v1.5.4 pin; the matrix overrides it.
-          DUCKDB_SHA: ${{ matrix.duckdb_tag == 'v1.4.5' && 'f31be57c1845a8895169fd58142040be26d433cf' || '08e34c447bae34eaee3723cac61f2878b6bdf787' }}
+      - name: Build (bootstrap fetches duckdb itself)
+        run: make release
 
-      - name: Show resolved configuration
+      - name: Corpus integrity
+        # Block scalar: the inline form would break YAML parsing on the ": " inside
+        # the grep pattern.
         run: |
-          echo "VTK_DIR=$VTK_DIR"
-          git -C duckdb rev-parse HEAD
+          cd test/data && sha256sum -c MANIFEST.sha256 | { grep -v ': OK$' || true; }
 
-      - name: Build
-        run: make release DUCK_VTK_WERROR=ON
-
-      - name: Verify the corpus is intact
-        run: cd test/data && sha256sum -c MANIFEST.sha256 | grep -v ': OK$' || true
-
-      - name: Verify the 1.4/1.5 version shim
-        # Cheap 2x2 check that each registration branch compiles with its own
-        # DuckDB version and is rejected by the other.
+      - name: Version shim (2x2 compile matrix)
         run: make check-api-compat
 
       - name: sqllogictest
@@ -90,32 +95,47 @@ jobs:
       - name: SQL invariants
         run: ./scripts/run_invariants.sh
 
-      - name: Smoke test
+      - name: Smoke
         run: BUILD_MODE=release ./scripts/smoke.sh
 
-  oracle:
-    name: oracle diff (independent Python VTK)
+  # ---------------------------------------------------------------------------
+  # 2. Cold boot: no preinstalled VTK, no warm cache, repo cloned not copied.
+  # ---------------------------------------------------------------------------
+  cold-boot:
+    name: cold boot (Docker, VTK from source)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake ninja-build ccache libvtk9-dev
-          echo "VTK_DIR=$(dirname $(dpkg -L libvtk9-dev | grep -m1 'VTKConfig.cmake\|vtk-config.cmake'))" >> $GITHUB_ENV
-      - uses: actions/cache@v4
         with:
-          path: ~/.cache/ccache
-          key: ccache-oracle-${{ github.sha }}
-          restore-keys: ccache-oracle-
-      - run: ./scripts/configure.sh
-      - run: make release
-      - uses: astral-sh/setup-uv@v5
-      - name: Elementwise diff against Python VTK
-        # The PyPI vtk wheel is a separate build from the apt one we link, which
-        # is what makes it a valid oracle: a shared bug cannot hide on both sides.
-        run: |
-          uv run --with vtk --with numpy python scripts/validate_against_vtk.py \
-            --data test/data \
-            --duckdb ./build/release/duckdb \
-            --ext build/release/extension/vtk/vtk.duckdb_extension
+          submodules: false
+          fetch-depth: 0
+      - name: Cold-boot build and test
+        run: make ci-verify
+
+  # ---------------------------------------------------------------------------
+  # 3. The real community-extensions pipeline.
+  # ---------------------------------------------------------------------------
+  # Calls the SAME reusable workflow community-extensions calls, with the same
+  # ci_tools_version and vcpkg pin. VTK is built from source by our vtk-minimal
+  # overlay port, so this is the slow job — but it is the only one that proves the
+  # submission will build. exclude_archs must stay in step with
+  # community-extension/description.yml.
+  distribution:
+    name: community-extensions build (${{ matrix.duckdb_version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - duckdb_version: v1.5.5
+            ci_tools_version: v1.5-variegata
+            vcpkg_commit: 84bab45d415d22042bd0b9081aea57f362da3f35
+          - duckdb_version: v1.4.5
+            ci_tools_version: v1.4-andium
+            vcpkg_commit: ce613c41372b23b1f51333815feb3edd87ef8a8b
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
+    with:
+      extension_name: vtk
+      duckdb_version: ${{ matrix.duckdb_version }}
+      ci_tools_version: ${{ matrix.ci_tools_version }}
+      exclude_archs: "osx_amd64;osx_arm64;windows_amd64;windows_arm64;windows_amd64_mingw;windows_amd64_rtools;wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl"
+      vcpkg_commit: ${{ matrix.vcpkg_commit }}

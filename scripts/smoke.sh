@@ -9,10 +9,11 @@
 #   5. VTK is genuinely callable from inside the loaded module
 #   6. ATTACH works end to end on a real file
 #
-# Check 4 is the important one: it is the difference between a build that works
-# on this machine and an extension a user can load. It passes because the duckdb
-# submodule is pinned to 08e34c447b, the exact commit the v1.5.4 CLI was built
-# from. If check 4 starts failing, that pin has drifted — this is the tripwire.
+# Check 4 only runs when the installed CLI is the SAME DuckDB version this was
+# built for; otherwise it skips with an explanation, because an extension refusing
+# to load into a different version is the design rather than a defect. When the
+# versions DO match and the load fails, that is a real problem — see the message
+# there. Use `make check-pin` to see the three versions that must agree.
 
 set -euo pipefail
 
@@ -64,15 +65,24 @@ step "4. Loads into the SYSTEM duckdb CLI"
 # ---------------------------------------------------------------------------
 if command -v duckdb >/dev/null 2>&1; then
   sys_ver=$(duckdb --version)
-  # -unsigned is required because locally built extensions are not signed.
-  if sys_out=$(duckdb -unsigned -noheader -list \
+  # An extension records the DuckDB version it was built for and LOAD refuses a
+  # mismatch. That is not a defect — it is the design — so when the system CLI is a
+  # DIFFERENT version from the one we targeted, skip with an explanation instead of
+  # reporting a failure. Only a mismatch on the SAME version is a real problem.
+  built_ver=$("$OWN_DUCKDB" -noheader -list -c "SELECT version();" 2>/dev/null || echo "?")
+  if [[ "$sys_ver" != *"$built_ver"* ]]; then
+    printf '  skip  system duckdb is %s but this extension was built for %s\n' "$sys_ver" "$built_ver"
+    printf '        (expected: the two only match when DUCKDB_VERSION_TAG equals your\n'
+    printf '         installed CLI. To test the system load, build with\n'
+    printf '         DUCKDB_VERSION_TAG=<your CLI version> or install a matching CLI.)\n'
+  elif sys_out=$(duckdb -unsigned -noheader -list \
         -c "LOAD '${PWD}/${EXT}'; SELECT vtk_version();" 2>&1); then
     pass "system duckdb (${sys_ver}) loads it; vtk_version() = ${sys_out}"
   else
     printf '%s\n' "$sys_out" >&2
-    fail "system duckdb (${sys_ver}) could NOT load the extension.
-      This usually means the duckdb submodule pin no longer matches the CLI build.
-      Expected submodule HEAD 08e34c447b for CLI v1.5.4; actual: $(git -C duckdb rev-parse --short HEAD 2>/dev/null || echo '?')"
+    fail "system duckdb (${sys_ver}) is the same version we built for but could NOT load
+      the extension. This is a real problem: check the metadata footer via
+      OVERRIDE_GIT_DESCRIBE and 'make check-pin'."
   fi
 else
   printf '  skip  no system duckdb on PATH\n'
@@ -97,7 +107,7 @@ step "6. ATTACH round-trip on a real file"
 SAMPLE=""
 for cand in \
     test/data/legacy/uGridEx.vtk \
-    test/data/xml/quadraticTetra01.vtu \
+    test/data/legacy/VTKCellTypes.vtk \
     test/data/legacy/*.vtk \
     test/data/xml/*.vtu ; do
   if [[ -f "$cand" ]]; then SAMPLE="$cand"; break; fi
@@ -109,20 +119,9 @@ if [[ -z "$SAMPLE" ]]; then
   exit 0
 fi
 
-# ATTACH arrives in Phase 3. Until the storage extension is registered, skip this
-# check rather than failing — but skip ONLY on the specific "unrecognised TYPE"
-# error, so that once Phase 3 lands, any other ATTACH failure is still a hard
-# failure. A blanket skip here would let a broken ATTACH pass silently, which is
-# exactly the kind of test that lies.
-probe=$("$OWN_DUCKDB" -noheader -list -c "
-  LOAD '${EXT}';
-  ATTACH '${SAMPLE}' AS probe_db (TYPE vtk);
-" 2>&1 || true)
-if grep -qiE "unrecognized|not found|unsupported.*type|no storage extension" <<<"$probe"; then
-  printf '  skip  ATTACH not implemented yet (Phase 3); storage extension unregistered\n'
-  printf '\033[1;33m[note]\033[0m Phase 1/2 smoke checks passed. Re-run after Phase 3 for the full gate.\n'
-  exit 0
-fi
+# The storage extension is registered as of Phase 3, so an unrecognised TYPE here
+# is a real failure — the earlier "skip if not implemented" escape hatch has been
+# removed deliberately, since keeping it would let a broken ATTACH pass silently.
 
 npoints=$("$OWN_DUCKDB" -noheader -list -c "
   LOAD '${EXT}';

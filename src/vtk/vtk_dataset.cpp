@@ -26,9 +26,9 @@
 #include <vtkXMLGenericDataObjectReader.h>
 
 #include <cmath>
+#include <filesystem>
 #include <map>
 #include <mutex>
-#include <sys/stat.h>
 
 namespace duckdb {
 
@@ -45,17 +45,24 @@ const char *VtkAssociationName(VtkAssociation association) {
 
 namespace {
 
+// std::filesystem rather than POSIX stat(): stat()/S_ISREG do not exist under
+// MSVC, and this was the only thing in the extension blocking a Windows build.
+// The error_code overloads are used so a permission problem or a race yields a
+// clean false/0 instead of throwing from inside a read path.
 int64_t FileSize(const std::string &path) {
-	struct stat st;
-	if (::stat(path.c_str(), &st) != 0) {
+	std::error_code ec;
+	const auto size = std::filesystem::file_size(std::filesystem::path(path), ec);
+	if (ec) {
 		return 0;
 	}
-	return static_cast<int64_t>(st.st_size);
+	return static_cast<int64_t>(size);
 }
 
 bool FileExists(const std::string &path) {
-	struct stat st;
-	return ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+	std::error_code ec;
+	// is_regular_file, not exists(): a directory or a device node handed to a VTK
+	// reader produces far more confusing failures than "no such file".
+	return std::filesystem::is_regular_file(std::filesystem::path(path), ec) && !ec;
 }
 
 //! One vtkIdList per thread, reused across rows.
