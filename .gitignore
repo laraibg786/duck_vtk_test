@@ -12,6 +12,9 @@ _deps/
 # a fetch script depending on live third-party URLs is a test suite that breaks
 # when someone else's server moves. MANIFEST.sha256 guards against corruption.
 
+duckdb_unittest_tempdir/
+
+
 # Editor / OS
 .vscode/
 .idea/

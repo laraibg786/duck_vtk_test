@@ -1,0 +1,116 @@
+name: CI
+
+# Deliberately builds against BOTH the DuckDB LTS line and current, because the
+# only API difference between them (storage-extension registration) is detected at
+# configure time by reading the real header — and a capability probe is only
+# trustworthy if something actually exercises both branches.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.duckdb_tag }} / ${{ matrix.cxx }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Current release.
+          - duckdb_tag: v1.5.4
+            cc: gcc-14
+            cxx: g++-14
+          # LTS line. If this breaks, the version shim in
+          # VtkRegisterStorageExtension is what to look at.
+          - duckdb_tag: v1.4.5
+            cc: gcc-14
+            cxx: g++-14
+          # A second compiler, to catch GCC-only assumptions.
+          - duckdb_tag: v1.5.4
+            cc: clang
+            cxx: clang++
+
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      DUCKDB_VERSION_TAG: ${{ matrix.duckdb_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          # Debian/Ubuntu's libvtk9-dev is ABI-matched to the system compiler and
+          # is ~50 MB, versus a multi-GB Homebrew bottle or an hour-long source
+          # build. Ideal for CI.
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build ccache libvtk9-dev ${{ matrix.cc }}
+          echo "VTK_DIR=$(dirname $(dpkg -L libvtk9-dev | grep -m1 'VTKConfig.cmake\|vtk-config.cmake'))" >> $GITHUB_ENV
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ matrix.duckdb_tag }}-${{ matrix.cxx }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.duckdb_tag }}-${{ matrix.cxx }}-
+
+      - name: Fetch pinned DuckDB
+        run: ./scripts/configure.sh
+        env:
+          # configure.sh defaults to the v1.5.4 pin; the matrix overrides it.
+          DUCKDB_SHA: ${{ matrix.duckdb_tag == 'v1.4.5' && 'f31be57c1845a8895169fd58142040be26d433cf' || '08e34c447bae34eaee3723cac61f2878b6bdf787' }}
+
+      - name: Show resolved configuration
+        run: |
+          echo "VTK_DIR=$VTK_DIR"
+          git -C duckdb rev-parse HEAD
+
+      - name: Build
+        run: make release DUCK_VTK_WERROR=ON
+
+      - name: Verify the corpus is intact
+        run: cd test/data && sha256sum -c MANIFEST.sha256 | grep -v ': OK$' || true
+
+      - name: sqllogictest
+        run: make test
+
+      - name: SQL invariants
+        run: ./scripts/run_invariants.sh
+
+      - name: Smoke test
+        run: BUILD_MODE=release ./scripts/smoke.sh
+
+  oracle:
+    name: oracle diff (independent Python VTK)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build ccache libvtk9-dev
+          echo "VTK_DIR=$(dirname $(dpkg -L libvtk9-dev | grep -m1 'VTKConfig.cmake\|vtk-config.cmake'))" >> $GITHUB_ENV
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-oracle-${{ github.sha }}
+          restore-keys: ccache-oracle-
+      - run: ./scripts/configure.sh
+      - run: make release
+      - uses: astral-sh/setup-uv@v5
+      - name: Elementwise diff against Python VTK
+        # The PyPI vtk wheel is a separate build from the apt one we link, which
+        # is what makes it a valid oracle: a shared bug cannot hide on both sides.
+        run: |
+          uv run --with vtk --with numpy python scripts/validate_against_vtk.py \
+            --data test/data \
+            --duckdb ./build/release/duckdb \
+            --ext build/release/extension/vtk/vtk.duckdb_extension
