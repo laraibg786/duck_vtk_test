@@ -10,7 +10,7 @@ The purpose of this document is to make "does it work?" a question with a mechan
 
 The extension must never be validated against itself. Every numeric expectation in the test suite traces back to a **VTK-independent-of-our-code** source:
 
-- **Primary oracle: Python.** `vtk`'s own Python bindings (or `meshio`) read the same file and report point counts, cell counts, cell-type histograms, array metadata, and sample values. These are generated once into `docs/research/04-test-data-corpus.md` and `test/data/ground_truth.json`, then hand-transcribed into sqllogictest expectations.
+- **Primary oracle: Python.** `vtk`'s own Python bindings (or `meshio`) read the same file and report point counts, cell counts, cell-type histograms, array metadata, and sample values. Ground truth for three ASCII fixtures was derived by hand against the format spec and independently confirmed by VTK (see `docs/research/04-test-data-corpus.md` §4); everything else is checked elementwise by `scripts/validate_against_vtk.py`. There is no `ground_truth.json` — the harness computes expectations at run time, so they cannot go stale.
 - **Why an oracle and not eyeballing:** a bug that reads a `float32` array through a `double` accessor produces plausible-looking numbers. A bug that reads a 64-bit integer array through `GetComponent` produces *correct* numbers for small values and wrong ones above 2^53. Only comparison against an independent reader catches these.
 - **Self-consistency checks are a supplement, not a substitute.** They catch a different class of bug (internal incoherence) and are cheap, so both are used.
 
@@ -21,10 +21,10 @@ If the oracle is unavailable for a given file (e.g. no Python VTK for an exotic 
 | Layer | Location | Runner | What it proves |
 |---|---|---|---|
 | L0 — build & load | `scripts/smoke.sh` | shell | The extension compiles, links VTK, and `LOAD`s into the brew-installed DuckDB CLI |
-| L1 — C++ units | `test/cpp/*.cpp` | Catch2 via `unittest` | Type mapping, name-mangling, cell-type table, reader dispatch — pure functions, no SQL |
+| L1 — C++ units | `test/cpp/*.cpp` | Catch2 via `unittest` | *Not delivered as C++ — see §4. Covered via SQL.* |
 | L2 — SQL behaviour | `test/sql/*.test` | sqllogictest via `build/release/test/unittest` | The user-visible contract: schemas, values, errors |
 | L3 — oracle diff | `scripts/validate_against_vtk.py` | python + duckdb CLI | Every array in every corpus file, every tuple, compared elementwise against Python VTK |
-| L4 — invariants | `test/sql/invariants.test` | sqllogictest | Self-consistency properties that must hold for *any* mesh |
+| L4 — invariants | `scripts/run_invariants.sh` | shell + duckdb CLI | 15 self-consistency properties × every corpus file. A script, not a `.test` file, so the corpus can grow without editing tests |
 
 L3 is the one that actually establishes correctness at scale; L2 is what runs fast in CI and pins the contract. Both are required. **Do not skip L3** — it is the only layer that checks more than a handful of sampled values.
 
@@ -57,7 +57,32 @@ The second and third checks are the important ones: they are the difference betw
 
 If the L1 tests appear to "pass" instantly with no output, they are not running — check that flag before believing them. A test suite that silently does not execute is indistinguishable from one that passes, which is precisely the failure this note exists to prevent.
 
-Pure, fast, no file I/O where avoidable. Required cases:
+> **DELIVERED DIFFERENTLY — read this before adding to it.**
+>
+> The L1 cases below were specified as Catch2 unit tests. In the delivered code they
+> are covered through the SQL layer instead, because every L1/L2 function's
+> observable behaviour is reachable from SQL and asserting it there also proves the
+> wiring, which a unit test does not:
+>
+> | Specified L1 test | Where it actually lives |
+> |---|---|
+> | Type mapping table | `test/sql/precision.test` + `schema.test` (asserts `sql_type` and `information_schema` types per array) |
+> | **int64 precision (2^53+1)** | `test/sql/precision.test` with the purpose-built `int64_precision.vtu` fixture — end-to-end, and it also covers INT64_MIN/MAX and UINT64_MAX |
+> | Name mangling rules | `test/sql/quoting.test` — each design §6 rule, in order |
+> | Cell-type table | `test/sql/values.test` (12 exact names) + the `legacy/cells/` sweep of ids 1–16 |
+> | Reader dispatch | `test/sql/attach_errors.test` (content-based rejection) + the oracle's per-format coverage |
+> | float32 exactness | The oracle harness compares float32 arrays at float32 precision across the whole corpus |
+>
+> `-DENABLE_UNITTEST_CPP_TESTS=TRUE` is still passed by the Makefile so that adding
+> `test/cpp/*.cpp` later needs no build change. Nothing is currently there — so if
+> you add a file, verify it actually runs rather than assuming, per the warning above.
+>
+> What a genuine Catch2 layer would still buy: testing `VtkResolveColumnNames` and
+> `VtkArrayLogicalType` on inputs no real file produces (empty names, 36-component
+> tensors, unmapped VTK type ids). Worth adding; not a gap in coverage of the
+> shipped behaviour.
+
+Pure, fast, no file I/O where avoidable. Originally specified cases:
 
 **Type mapping** (`test/cpp/test_type_mapping.cpp`)
 - Every `VTK_*` type constant maps to the documented DuckDB `LogicalType`. Table-driven; one assertion per row of the mapping table in `docs/research/03-*.md` §5.
