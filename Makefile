@@ -278,9 +278,24 @@ ci-image:
 DUCKDB_GITDIR  = $(shell git -C duckdb rev-parse --absolute-git-dir 2>/dev/null)
 CITOOLS_GITDIR = $(shell git -C extension-ci-tools rev-parse --absolute-git-dir 2>/dev/null)
 
+# ...and that is still not enough on its own. A gitdir produced by `git submodule
+# update` ALSO carries a relative `core.worktree` (e.g. `../../../duckdb`). Bootstrap
+# fetches with `--depth 1`, which rules out git's local hardlink transport and forces
+# the real protocol, so `upload-pack` runs *inside the mirror* and chdirs to that
+# path — which does not exist under the mount:
+#   remote: fatal: cannot chdir to '../../../extension-ci-tools'
+#   fatal: protocol error: bad pack header
+# The mount is read-only by design, so it cannot simply be unset there. Skip the
+# mirror for any dep whose gitdir has core.worktree set and let bootstrap fetch from
+# the network: slower, but always correct. A gitdir created by plain `git init` (or
+# `git clone`) has no core.worktree and mirrors fine, which is why this reproduced
+# only in CI.
+DUCKDB_MIRROR_OK  = $(if $(DUCKDB_GITDIR),$(if $(shell git -C duckdb config --get core.worktree 2>/dev/null),,yes),)
+CITOOLS_MIRROR_OK = $(if $(CITOOLS_GITDIR),$(if $(shell git -C extension-ci-tools config --get core.worktree 2>/dev/null),,yes),)
+
 CI_MIRROR_ARGS = $(if $(CI_VERIFY_NO_MIRROR),,\
-	$(if $(DUCKDB_GITDIR),-v $(DUCKDB_GITDIR):/mirror/duckdb.git:ro -e DUCKDB_GIT_MIRROR=/mirror/duckdb.git,) \
-	$(if $(CITOOLS_GITDIR),-v $(CITOOLS_GITDIR):/mirror/citools.git:ro -e CITOOLS_GIT_MIRROR=/mirror/citools.git,))
+	$(if $(DUCKDB_MIRROR_OK),-v $(DUCKDB_GITDIR):/mirror/duckdb.git:ro -e DUCKDB_GIT_MIRROR=/mirror/duckdb.git,) \
+	$(if $(CITOOLS_MIRROR_OK),-v $(CITOOLS_GITDIR):/mirror/citools.git:ro -e CITOOLS_GIT_MIRROR=/mirror/citools.git,))
 
 ci-verify: ci-image
 	docker volume create $(DOCKER_CCACHE) >/dev/null

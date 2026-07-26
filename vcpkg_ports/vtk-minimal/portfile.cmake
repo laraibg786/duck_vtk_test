@@ -15,6 +15,22 @@
 #    .duckdb_extension that needs libvtkCommonCore-9.6.so on the user's machine is
 #    not distributable, which is the whole point of building for the community repo.
 
+#  * RELEASE ONLY. Nothing links a debug VTK: the extension ships release, and a
+#    debug VTK would only ever be built to be thrown away. Skipping it halves both
+#    build time and disk.
+#
+#    This is load-bearing, not an optimisation. Most triplets community-extensions
+#    uses are already release-only (x64-linux-release,
+#    x64-windows-static-md-release-vs2019comp), but `x64-mingw-static` is NOT, so
+#    it built VTK twice and exhausted the runner's disk mid-compile:
+#      Fatal error: can't write 11 bytes to section .text of Common/Core/...
+#    which reads like a compiler bug rather than ENOSPC and cost real time to
+#    diagnose. Setting it in the portfile covers every triplet regardless.
+#
+#    Setting VCPKG_BUILD_TYPE in a portfile is an established upstream pattern —
+#    ports/cgal, ports/si and ports/nonstd-bit-lite all do exactly this.
+set(VCPKG_BUILD_TYPE release)
+
 vcpkg_download_distfile(ARCHIVE
     # vtk.org is the canonical source. A GitHub mirror of the same release is
     # listed second so a vtk.org outage does not break every build.

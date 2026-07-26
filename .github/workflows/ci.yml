@@ -110,6 +110,13 @@ jobs:
           submodules: false
           fetch-depth: 0
       - name: Cold-boot build and test
+        # No git mirror here, deliberately. `make ci-verify` mounts populated local
+        # submodules as mirrors to save a ~500 MB fetch on a developer's machine, and
+        # it silently did so in CI too — the run log said "network fetch NOT
+        # exercised", which is precisely what this job exists to exercise. Runner
+        # bandwidth is free, so take the real fetch from GitHub.
+        env:
+          CI_VERIFY_NO_MIRROR: 1
         run: make ci-verify
 
   # ---------------------------------------------------------------------------
