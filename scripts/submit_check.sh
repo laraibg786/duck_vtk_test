@@ -112,6 +112,24 @@ else
   ok "all required components enabled in the port"
 fi
 
+step "vcpkg port and local build script enable the same VTK modules"
+# These two must agree or "works locally, fails in their CI" becomes possible in
+# either direction. CommonMisc was already out of step once: the port enabled it
+# explicitly while the script relied on VTK pulling it in transitively.
+# Require the -D prefix: both files also NAME modules in comments explaining why
+# they are deliberately not enabled (IOGeometry), and matching those would report a
+# difference that does not exist.
+port_mods=$(grep -oP '\-DVTK_MODULE_ENABLE_VTK_\K[A-Za-z]+(?==YES)' \
+            vcpkg_ports/vtk-minimal/portfile.cmake | sort -u)
+script_mods=$(grep -oP '\-DVTK_MODULE_ENABLE_VTK_\K[A-Za-z]+(?==YES)' \
+              scripts/build_minimal_vtk.sh | sort -u)
+if [[ "$port_mods" == "$script_mods" ]]; then
+  ok "$(wc -l <<<"$port_mods") modules, identical in both"
+else
+  bad "module lists differ between the vcpkg port and build_minimal_vtk.sh:"
+  diff <(echo "$port_mods") <(echo "$script_mods") | sed 's/^/       /'
+fi
+
 step "Submodule pin is recorded"
 if make -s check-pin >/tmp/submit_pin.log 2>&1; then
   ok "$(grep -m1 'derived version tag' /tmp/submit_pin.log || echo 'pin recorded')"
