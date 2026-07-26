@@ -5,7 +5,5 @@ duckdb_extension_load(vtk
     LOAD_TESTS
 )
 
-# The JSON extension is loaded in tests so that the oracle harness can compare
-# nested LIST columns via json serialisation rather than a lossy CSV round-trip.
-# Comment out if it slows the build unacceptably.
-duckdb_extension_load(json)
+# No extra core extensions are loaded. The oracle harness uses the CLI's built-in
+# `.mode json`, not the `json` extension, so building it would only add build time.

@@ -265,6 +265,7 @@ Write the full L2 suite and the L3/L4 harnesses per design doc 02 §5–7. `scri
 4. **Taking a LIST child-vector pointer before `ListVector::Reserve`** — use-after-free, often passing in release and asserting only in debug.
 5. **`vtkDataSet::GetCell` in a scan** — shared scratch object; a latent data race.
 6. **Assuming C++ tests ran** — they are disabled unless `-DENABLE_UNITTEST_CPP_TESTS=TRUE` reaches cmake.
+6b. **Forgetting `OVERRIDE_GIT_DESCRIBE`** — builds and links fine, then `LOAD` reports the extension was built for DuckDB `v0.0.1`. Already handled in the Makefile; `make check-pin` guards it.
 7. **Not overriding `TableFunctionData::Copy()`** — default throws `InternalException`.
 8. **Off-by-one in `column_ids`** — returns the wrong column's data with no error.
 9. **Committing test expectations not derived from the oracle** — makes the suite lie. Mark `mode skip` with a reason instead.

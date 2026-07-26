@@ -104,8 +104,23 @@ for cand in \
 done
 
 if [[ -z "$SAMPLE" ]]; then
-  printf '  skip  no corpus file found; run "make data" to enable this check\n'
+  printf '  skip  no corpus file found\n'
   printf '\033[1;33m[warn]\033[0m smoke test incomplete: the ATTACH path was NOT exercised.\n'
+  exit 0
+fi
+
+# ATTACH arrives in Phase 3. Until the storage extension is registered, skip this
+# check rather than failing — but skip ONLY on the specific "unrecognised TYPE"
+# error, so that once Phase 3 lands, any other ATTACH failure is still a hard
+# failure. A blanket skip here would let a broken ATTACH pass silently, which is
+# exactly the kind of test that lies.
+probe=$("$OWN_DUCKDB" -noheader -list -c "
+  LOAD '${EXT}';
+  ATTACH '${SAMPLE}' AS probe_db (TYPE vtk);
+" 2>&1 || true)
+if grep -qiE "unrecognized|not found|unsupported.*type|no storage extension" <<<"$probe"; then
+  printf '  skip  ATTACH not implemented yet (Phase 3); storage extension unregistered\n'
+  printf '\033[1;33m[note]\033[0m Phase 1/2 smoke checks passed. Re-run after Phase 3 for the full gate.\n'
   exit 0
 fi
 

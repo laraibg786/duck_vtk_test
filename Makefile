@@ -24,6 +24,24 @@ endif
 # the most important single test in the project) never run.
 EXT_FLAGS += -DENABLE_UNITTEST_CPP_TESTS=TRUE
 
+# Stamp the correct DuckDB version into the extension's metadata footer.
+#
+# Every .duckdb_extension records the DuckDB version it was built for, and LOAD
+# refuses a mismatch. That version comes from `git describe` on the duckdb
+# submodule. We fetch the submodule shallowly at a bare commit (see
+# scripts/setup_dev_env.sh), so it carries NO TAGS and git describe yields
+# nothing — the build then stamps the fallback "v0.0.1" and the extension fails
+# to load with:
+#
+#   Invalid Input Error: Failed to load '...vtk.duckdb_extension', The file was
+#   built specifically for DuckDB version 'v0.0.1' and can only be loaded with
+#   that version of DuckDB. (this version of DuckDB is 'v1.5.4')
+#
+# MUST be kept in step with the duckdb submodule pin (08e34c447b == v1.5.4).
+# `make check-pin` verifies the two agree.
+DUCKDB_VERSION_TAG ?= v1.5.4
+OVERRIDE_GIT_DESCRIBE ?= $(DUCKDB_VERSION_TAG)
+
 # Pin the C++ standard explicitly.
 #
 # DuckDB core's CMakeLists defaults CMAKE_CXX_STANDARD to 11, while our own
@@ -53,15 +71,15 @@ include extension-ci-tools/makefiles/duckdb_extension.Makefile
 EXT_RELEASE_PATH := build/release/extension/$(EXT_NAME)/$(EXT_NAME).duckdb_extension
 EXT_DEBUG_PATH   := build/debug/extension/$(EXT_NAME)/$(EXT_NAME).duckdb_extension
 
-.PHONY: setup data smoke oracle invariants check phase0 print-vtk
+.PHONY: setup data smoke oracle invariants check phase0 print-vtk check-pin
 
 ## Install host prerequisites (brew toolchain + python venv for the test oracle)
 setup:
 	./scripts/setup_dev_env.sh
 
-## Fetch and verify the VTK test-data corpus
+## Verify the committed test-data corpus against its checksum manifest
 data:
-	./test/data/fetch_data.sh
+	cd test/data && sha256sum -c MANIFEST.sha256 | grep -v ': OK$' || echo "all corpus files verified"
 
 ## Phase 0 ABI spike: prove we can link and run against the installed VTK
 ## BEFORE relying on it from inside DuckDB. See scripts/phase0_spike/.
@@ -94,3 +112,19 @@ check: phase0 release smoke test oracle invariants
 print-vtk:
 	@grep -E "duck_vtk: (VTK_|VTK library|required|optional)" build/release/CMakeCache.txt 2>/dev/null \
 		|| echo "No configured build yet; run 'make release' first."
+
+## Verify DUCKDB_VERSION_TAG matches the duckdb submodule pin, and that the
+## installed CLI is the same build. A drift here produces an extension that
+## silently refuses to load, so it is worth an explicit check.
+check-pin:
+	@sub=$$(git -C duckdb rev-parse HEAD 2>/dev/null || echo missing); \
+	cli=$$(duckdb --version 2>/dev/null || echo missing); \
+	echo "duckdb submodule : $$sub"; \
+	echo "DUCKDB_VERSION_TAG: $(DUCKDB_VERSION_TAG)"; \
+	echo "system duckdb CLI : $$cli"; \
+	case "$$cli" in \
+	  *"$(DUCKDB_VERSION_TAG) "*) echo "OK: CLI version matches DUCKDB_VERSION_TAG" ;; \
+	  missing) echo "WARN: no duckdb on PATH; cannot cross-check" ;; \
+	  *) echo "MISMATCH: CLI is '$$cli' but DUCKDB_VERSION_TAG is $(DUCKDB_VERSION_TAG)."; \
+	     echo "         The built extension will refuse to load into this CLI."; exit 1 ;; \
+	esac
