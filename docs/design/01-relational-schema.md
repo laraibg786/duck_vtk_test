@@ -254,7 +254,7 @@ These are the acceptance queries for Phase 1 — a CAE engineer's actual first s
 
 ```sql
 -- 1. What is in this file?
-ATTACH 'test/data/xml/quadraticTetra01.vtu' AS m (TYPE vtk);
+ATTACH 'test/data/xml/QuadraticTetra.vtu' AS m (TYPE vtk);
 SELECT * FROM m.vtk_info;
 SELECT association, name, sql_type, num_components, num_tuples FROM m.vtk_arrays ORDER BY association, array_index;
 

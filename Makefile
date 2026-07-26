@@ -29,7 +29,7 @@ EXT_FLAGS += -DENABLE_UNITTEST_CPP_TESTS=TRUE
 # Every .duckdb_extension records the DuckDB version it was built for, and LOAD
 # refuses a mismatch. That version comes from `git describe` on the duckdb
 # submodule. We fetch the submodule shallowly at a bare commit (see
-# scripts/setup_dev_env.sh), so it carries NO TAGS and git describe yields
+# scripts/configure.sh), so it carries NO TAGS and git describe yields
 # nothing — the build then stamps the fallback "v0.0.1" and the extension fails
 # to load with:
 #
@@ -131,9 +131,10 @@ EXT_DEBUG_PATH   := build/debug/extension/$(EXT_NAME)/$(EXT_NAME).duckdb_extensi
 
 .PHONY: setup data smoke oracle invariants check phase0 print-vtk check-pin
 
-## Install host prerequisites (brew toolchain + python venv for the test oracle)
-setup:
-	./scripts/setup_dev_env.sh
+## Alias for `configure`, kept because `make setup` is a common reflex.
+## There is deliberately only ONE setup implementation (scripts/configure.sh);
+## the previous scripts/configure.sh was a second, slowly diverging copy.
+setup: configure
 
 ## Verify the committed test-data corpus against its checksum manifest
 data:
@@ -292,3 +293,10 @@ ci-shell: ci-image
 		-v $(PROJ_DIR):/src:ro -v $(DOCKER_CCACHE):/ccache $(DOCKER_IMAGE_CI)
 
 .PHONY: ci-image ci-verify ci-verify-apt ci-shell
+
+## Pre-submission paperwork gate for DuckDB community extensions. Runs offline in
+## about a second; does not build. Pair with `make ci-verify` and `make check`.
+submit-check:
+	./scripts/submit_check.sh
+
+.PHONY: submit-check

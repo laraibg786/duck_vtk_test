@@ -25,14 +25,20 @@ File parsing is done by the **official VTK C++ library** (Kitware), not a hand-r
 ## Quick start
 
 ```bash
-git clone <this repo> && cd duck_vtk
-make configure     # submodules at pinned commits, VTK, test corpus, oracle
-make release       # build (first build is slow: it compiles DuckDB too)
-make install       # so `LOAD vtk;` works with no path
-duckdb -unsigned   # locally built extensions are unsigned
+git clone <this repo> && cd duck_vtk    # plain clone is fine; --recursive not needed
+make release                            # fetches what it needs, then builds
+make install                            # so `LOAD vtk;` works with no path
+duckdb -unsigned                        # locally built extensions are unsigned
 ```
 
-`make configure` is idempotent and is the only setup command you need. It fetches the DuckDB submodule *at its pinned commit only* rather than cloning ~1 GB of history, and builds a minimal VTK if it cannot find one.
+`make release` bootstraps its own dependencies, so a **non-recursive clone builds
+with one command**. `make configure` does the same setup explicitly (plus the test
+oracle) and is idempotent, but is not required.
+
+A plain clone is 26 MB and leaves `duckdb/` and `extension-ci-tools/` empty — the
+submodules cost 218 bytes of metadata and are only materialised when the build
+needs them. They exist because the DuckDB community-extensions CI requires a
+`duckdb` submodule (it runs `cd duckdb && git checkout <version>`).
 
 ## Requirements
 
@@ -210,6 +216,46 @@ Verified on **DuckDB 1.5.4 and 1.4.5 (LTS)**: 594 sqllogictest assertions and
 Correctness is established against **independent ground truth**, never against the extension itself: a Python VTK build that shares no code with the C++ one, plus hand-derived values for three ASCII fixtures (see `docs/research/04-test-data-corpus.md` §4). The 79-file corpus is committed with a checksum manifest.
 
 The standout invariant cross-checks SQL-computed bounds against VTK's independent `GetBounds`, which catches x/y/z transposition that no spot check on a symmetric mesh would find.
+
+## Submitting to DuckDB community extensions
+
+The repo is structured for submission. `community-extension/description.yml` is
+the descriptor to copy into a `duckdb/community-extensions` PR; it has two TODOs
+(the GitHub repo path and maintainer handle).
+
+```bash
+make submit-check     # everything that must hold before submitting
+make ci-verify        # cold-boot build in Docker, no local state involved
+```
+
+What compliance required, and how it is handled:
+
+| Their requirement | Here |
+|---|---|
+| `description.yml` in their repo under `extensions/vtk/` | `community-extension/description.yml` |
+| `duckdb` git submodule (their CI runs `cd duckdb && git checkout <ver>`) | present; empty on a plain clone |
+| Dependencies via **vcpkg**, nothing assumed on the runner | `vcpkg.json` + `vcpkg_ports/vtk-minimal` |
+| Build via `make <build_type>` at repo root | our `Makefile` |
+| DuckDB v1.5.5 (default) and v1.4.5 (Andium/LTS) | both compile; `make check-api-compat` proves the version shim |
+
+**VTK comes from our own vcpkg overlay port**, `vcpkg_ports/vtk-minimal`. vcpkg's
+official `vtk` port is unusable for a database extension: rendering lives in its
+*base* port, so it pulls 26 transitive dependencies including glew, freetype,
+gl2ps and Qt — hours of CI per platform for an OpenGL stack a SQL engine never
+calls. The overlay disables rendering/Qt/Python/MPI/imaging/testing using
+upstream VTK's own CMake options, with **no source patches**, so upgrading VTK is
+a version and hash change rather than a patch to re-base. The dependency closure
+drops from 26 to 3.
+
+### Platform scope
+
+The first submission targets **`linux_amd64` and `linux_arm64`**. The other 11
+matrix platforms are excluded, each for a stated reason: macOS builds cannot be
+verified from the development machine, Windows needs an MSVC VTK build, wasm is
+not viable for VTK at all, and musl needs a fully static VTK. Widen one platform
+at a time, each with a green build behind it — `excluded_platforms` in
+`description.yml` and `exclude_archs` in `.github/workflows/ci.yml` must stay in
+step.
 
 ## Documentation
 

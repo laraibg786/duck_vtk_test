@@ -1,6 +1,6 @@
 # Test Data Corpus — `duck_vtk`
 
-**Total:** 79 files, 17 MB, committed to the repository under `test/data/`.
+**Total:** 81 files, 17 MB, committed to the repository under `test/data/`.
 **Integrity manifest:** `test/data/MANIFEST.sha256` (verify with `cd test/data && sha256sum -c MANIFEST.sha256`).
 
 ## 1. Provenance and licensing
@@ -21,16 +21,22 @@ VTK and its data are distributed under the **BSD 3-Clause** licence, which permi
 
 ## 2. Integrity verification performed
 
-Every one of the 79 files was checked for:
+Every file was checked for:
 
 - **HTML error pages** masquerading as data (`<html`, `<!DOCTYPE`, `404`, `Not Found` in the first 100 bytes) — none found.
 - **Git-LFS pointer stubs** (`version https://git-lfs...`) — none found.
 - **Implausibly small size** (< 60 bytes) — none found.
 - **Legacy VTK magic header**: all 23 `legacy/*.vtk` files begin `# vtk DataFile Version <n>`.
 
-Result: **all 79 files are real data.**
+Result: **all files are real data.**
 
-**What was NOT done, and must be before test expectations are trusted:** no Python-VTK oracle run. `brew install vtk` had not completed and the `.venv` was never created, so numeric ground truth below was derived by **reading the ASCII files directly against the VTK file-format specification** — which is a legitimate independent oracle for ASCII files, but covers only those. Per `docs/design/02-validation-and-testing.md` §1, every binary/compressed file's ground truth is **UNVERIFIED** and must be established via `scripts/validate_against_vtk.py` before any expectation derived from it is committed. Do not write a sqllogictest expectation for a binary file until that harness runs.
+**Oracle status — RESOLVED.** When this document was first written no Python-VTK oracle had run, so the numeric ground truth in §4 was derived by hand from the ASCII files against the format spec, and every binary file was marked UNVERIFIED.
+
+`scripts/validate_against_vtk.py` now runs clean: **67 files, 0 mismatches**, comparing points, cell types, order-sensitive connectivity and every point/cell array elementwise against the PyPI `vtk` wheel — a build sharing no code with the C++ VTK the extension links. The 15 skips are the Phase-4 formats (`.vtm`, `.pvd`, `.pvtu`, `.ex2`, `.e`, `.cgns`, `.vtkhdf`) and the negative fixtures.
+
+VTK independently confirmed all three hand-derived entries in §4 exactly, so the two oracles agree and both can be trusted.
+
+Run it with `make oracle`.
 
 ## 3. Inventory
 
@@ -69,7 +75,7 @@ Result: **all 79 files are real data.**
 | `Polygon.vtk` | 7 | `PentagonalPrism.vtk` | 15 |
 | `Pixel.vtk` | 8 | `HexagonalPrism.vtk` | 16 |
 
-This set is the natural driver for `test/cpp/test_cell_types.cpp` and for an end-to-end loop asserting `cells.cell_type` and `cell_type_name` for every type.
+This set drives the cell-type assertions in `test/sql/values.test`, and the whole sweep is covered by `scripts/run_invariants.sh` and the oracle.
 
 ### 3.2 Tier 2 — extensibility
 
@@ -110,7 +116,7 @@ Written by hand for this project. Each targets a specific row of `docs/design/01
 | `synthetic/empty.vtk` | `UNSTRUCTURED_GRID` with `POINTS 0`, `CELLS 0 0`, `CELL_TYPES 0` | All six tables must exist and return 0 rows; `vtk_info` returns 1 row with zero counts and **NULL bounds** (not VTK's `±VTK_DOUBLE_MAX` sentinel). Must **not** be an error |
 | `synthetic/points_only.vtk` | 4 points, 0 cells, one point scalar `temperature` = 10.5/20.5/30.5/40.5 | `cells` and `cell_points` return 0 rows while `points` returns 4 |
 | `synthetic/awkward_names.vtk` | 3 points, 1 triangle; point arrays named `Pressure_Pa`, **`x`**, `Temperature`, `temperature` | Name-collision policy (design §6): `x` collides with the reserved coordinate column → becomes `x_1`; `Temperature`/`temperature` are ambiguous under DuckDB's case-insensitive unquoted resolution → the later is suffixed. `vtk_arrays.name` keeps originals, `column_name` reports the mangled result |
-| `synthetic/nan_inf.vtk` | 4 points, point scalar `value` = `1.5 nan inf -inf` | NaN/±Inf must pass through as DOUBLE values, **not** be converted to NULL |
+| `synthetic/nan_inf.vtu` | 4 points, point scalar `value` = 1.5, NaN, +Inf, -Inf as base64 **binary** (exact IEEE bit patterns) | NaN/±Inf must pass through as DOUBLE values, **not** be converted to NULL |
 | `synthetic/truncated.vtk` | First 120 bytes of `legacy/uGridEx.vtk` | Must raise `IOException` at `ATTACH`, naming the file. Must **never** be reported as an empty mesh |
 | `synthetic/not_really.vtk` | Plain prose with a `.vtk` extension | Reader dispatch must be **content**-based; must be rejected |
 | `synthetic/bad_type.vtu` | Well-formed XML, `type="NotARealDataSetType"` | Valid XML but unknown dataset type → clear error, not a crash |
@@ -246,6 +252,11 @@ cd test/data && sha256sum -c MANIFEST.sha256
 If files are ever regenerated or extended, prefer **generating** fixtures locally with the Python VTK writer over downloading them. That gives exact known-by-construction ground truth, needs no network, and is the right way to fill the Tier-2 gaps (complete multiblock and time-series sets).
 
 ## 6. Not obtained
+
+Two gaps noted here were subsequently closed and are now committed fixtures:
+
+- **`synthetic/int64_precision.vtu`** — int64/uint64 values above 2^53 (2^53+1, INT64_MIN/MAX, 2^63, UINT64_MAX) as base64 binary. This was called out below as "the highest-value missing fixture"; it now backs `test/sql/precision.test`.
+- **String-array coverage** — `legacy/financial.vtk` turned out to be a legacy `DATASET FIELD` file carrying a `vtkStringArray`, so the `GetArray()`-returns-null trap is exercised after all.
 
 | Wanted | Status |
 |---|---|

@@ -165,7 +165,7 @@ Behaviour:
    - `NaN` compares equal to `NaN` for this purpose; `+Inf`/`-Inf` must match sign.
 5. Report a per-file pass/fail table and exit non-zero on any mismatch, printing the first 10 differing elements with indices.
 
-Must be runnable as `python3 scripts/validate_against_vtk.py --data test/data --duckdb ./build/release/duckdb --ext build/release/extension/vtk/vtk.duckdb_extension`, and must work from a venv created by `scripts/setup_dev_env.sh`.
+Must be runnable as `python3 scripts/validate_against_vtk.py --data test/data --duckdb ./build/release/duckdb --ext build/release/extension/vtk/vtk.duckdb_extension`, and must work from a venv created by `scripts/configure.sh`.
 
 This harness is what justifies the claim "the extension reads VTK files correctly". L2 alone only proves it reads *these seventeen sampled values* correctly.
 

@@ -33,6 +33,7 @@ These were verified directly on this machine. Do not re-derive them.
 | Platform | Linux x86_64, Debian 13 (trixie), kernel 6.12 |
 | System compiler | Debian GCC 14.2.0 (`/usr/bin/g++`) |
 | System DuckDB CLI | `v1.5.4 (Variegata) 08e34c447b`, at `/home/linuxbrew/.linuxbrew/bin/duckdb` |
+| **community-extensions targets** | `v1.5.5` (default, ci_tools `v1.5-variegata`) and `v1.4.5` (Andium/LTS, `v1.4-andium`). Their CI checks DuckDB out itself, so these are what must COMPILE; the submodule pin only decides what a local build produces |
 | DuckDB platform string | `linux_amd64` (from `PRAGMA platform`) |
 | Toolchain | cmake 4.4.0, ninja 1.13.2, ccache 4.13.6 (all via brew) |
 | **duckdb submodule pin** | `08e34c447bae34eaee3723cac61f2878b6bdf787` — tag `v1.5.4`, **identical to the installed CLI's build**, and identical to what `extension-template@main` pins |
@@ -152,7 +153,7 @@ Work the phases in order. Each has a **gate** — do not start the next phase un
 
 Already written for you: `scripts/phase0_spike/{CMakeLists.txt,main.cpp}`.
 
-1. `./scripts/setup_dev_env.sh` — installs toolchain, VTK, submodules, and the Python oracle venv.
+1. `make configure` — installs toolchain, VTK, submodules, and the Python oracle venv.
 2. `make phase0`
 3. Compare the printed `num_points` / `num_cells` / array metadata against `docs/research/04-test-data-corpus.md` ground truth.
 
@@ -188,7 +189,7 @@ Research doc 03 was written before VTK finished installing, so it cites docs rat
 > This phase also surfaced the mandatory `OVERRIDE_GIT_DESCRIBE` (see §3.6) —
 > without it the extension links perfectly and fails only at `LOAD`.
 
-1. Create the submodules at the pinned commits (`setup_dev_env.sh` does this; verify the pin).
+1. Create the submodules at the pinned commits (`configure.sh` does this; verify the pin).
 2. Copy `.clang-format` and `.clang-tidy` from `extension-template` so formatting matches DuckDB house style.
 3. Write `src/vtk_extension.cpp` + `src/include/vtk_extension.hpp` using the §3.1 entrypoint. Register **one** scalar function:
    - `vtk_version() -> VARCHAR` returning `vtkVersion::GetVTKVersion()`.
@@ -269,7 +270,7 @@ Build L4 on Phase 2's functions. Follow research doc 02's skeleton, checked agai
 
 ### Phase 4 — Tests, docs, CI — ✅ **DONE**
 
-> 10 sqllogictest files / 552 assertions, invariant runner, oracle harness, Python
+> 10 sqllogictest files / 594 assertions, invariant runner, oracle harness, Python
 > client smoke test, README, LICENSE, and a CI matrix over DuckDB 1.5.4 + 1.4.5 LTS
 > + clang.
 
