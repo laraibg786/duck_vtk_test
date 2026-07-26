@@ -48,35 +48,19 @@ include(${CMAKE_CURRENT_LIST_DIR}/cmake/DuckVTKFindVTK.cmake)
 set(EXTENSION_SOURCES
     src/vtk_extension.cpp
 
-    # Phase 2 (L1/L2/L3) and Phase 3 (L4) sources are added here as they are
-    # written. Listed explicitly rather than globbed: a GLOB does not re-run when
-    # a file is added, producing confusing "undefined symbol" link errors for a
-    # file the author believes is being compiled.
-    #
-    # Phase 2 — L1 VTK access:
-    #   src/vtk/vtk_error_scope.cpp        <-- implement FIRST; Phase 0 showed it is
-    #                                          correctness-critical, not cosmetic
-    #   src/vtk/vtk_reader_factory.cpp
-    #   src/vtk/vtk_dataset.cpp
-    # Phase 2 — L2 relational model:
-    #   src/model/vtk_type_mapping.cpp
-    #   src/model/vtk_cell_types.cpp
-    #   src/model/vtk_table_schema.cpp
-    #   src/model/vtk_column_writer.cpp
-    # Phase 2 — L3 table functions:
-    #   src/functions/vtk_points_function.cpp
-    #   src/functions/vtk_cells_function.cpp
-    #   src/functions/vtk_cell_points_function.cpp
-    #   src/functions/vtk_field_data_function.cpp
-    #   src/functions/vtk_arrays_function.cpp
-    #   src/functions/vtk_info_function.cpp
-    #   src/functions/vtk_debug_function.cpp
-    # Phase 3 — L4 catalog / ATTACH:
-    #   src/catalog/vtk_storage_extension.cpp
-    #   src/catalog/vtk_catalog.cpp
-    #   src/catalog/vtk_schema_entry.cpp
-    #   src/catalog/vtk_table_entry.cpp
-    #   src/catalog/vtk_transaction_manager.cpp
+    # L1 — VTK access
+    src/vtk/vtk_error_scope.cpp
+    src/vtk/vtk_dataset.cpp
+
+    # L2 — relational model
+    src/model/vtk_types.cpp
+    src/model/vtk_table_schema.cpp
+    src/model/vtk_column_writer.cpp
+
+    # L3 — table functions (all six tables plus vtk_debug_dump share one file,
+    # because they share the scan loop, bind helper and emitters; splitting them
+    # would duplicate that machinery six times)
+    src/functions/vtk_table_functions.cpp
 )
 
 # DuckDB builds TWO targets from the same sources:

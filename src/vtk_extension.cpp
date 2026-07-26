@@ -8,6 +8,9 @@
 
 // VTK. Only what Phase 1 needs: enough to prove the library is linked,
 // initialised, and callable from inside a dlopen'd DuckDB module.
+#include "functions/vtk_table_functions.hpp"
+#include "vtk/vtk_error_scope.hpp"
+
 #include <vtkVersion.h>
 #include <vtkType.h>
 
@@ -49,6 +52,9 @@ static void VtkBuildInfoFun(DataChunk &args, ExpressionState &state, Vector &res
 }
 
 void LoadInternal(ExtensionLoader &loader) {
+	// Stop VTK writing to the host process's stderr. Must happen before any read.
+	VtkSilenceVtkLogger();
+
 	// v1.5.4 registration: loader.RegisterFunction(...), taking the function by
 	// value. ExtensionUtil::RegisterFunction(db, fn) — used by most tutorials and
 	// by every published extension tracking `main` — does not compile here.
@@ -57,7 +63,10 @@ void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(
 	    ScalarFunction("vtk_build_info", {}, LogicalType::VARCHAR, VtkBuildInfoFun));
 
-	// Phase 2 registers the table functions here.
+	for (auto &fn : VtkAllTableFunctions()) {
+		loader.RegisterFunction(fn);
+	}
+
 	// Phase 3 registers the storage extension here, via
 	//   auto &db = loader.GetDatabaseInstance();
 	//   StorageExtension::Register(DBConfig::GetConfig(db), "vtk", ...);
