@@ -37,6 +37,18 @@ cd "$REPO_ROOT"
 DUCKDB_SHA="${DUCKDB_SHA:-d8cdaa33fda8df955cc76ef58a280f68f4cd43fa}"        # v1.5.5
 CITOOLS_SHA="${CITOOLS_SHA:-72e76e99cd7fee45a99739cd118ec2db64e034ec}"      # v1.5-variegata
 
+# Optional local mirrors, used INSTEAD of GitHub when set.
+#
+# Useful in three situations: a slow or metered link (a duckdb fetch is ~500 MB), an
+# air-gapped build, and the Docker cold-boot check, where re-downloading half a
+# gigabyte per run makes the check too expensive to run often. Any path git can clone
+# from works, including another checkout on the same machine.
+#
+# This does not weaken the pin: the requested SHA must still exist in the mirror, and
+# the checkout is verified afterwards exactly as for a network fetch.
+DUCKDB_GIT_MIRROR="${DUCKDB_GIT_MIRROR:-}"
+CITOOLS_GIT_MIRROR="${CITOOLS_GIT_MIRROR:-}"
+
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[1;32m  ok\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -53,7 +65,15 @@ bootstrap() {
   # Prefer the submodule machinery when this is a git checkout that knows about it:
   # it respects the recorded gitlink, so the version cannot drift from what the
   # repo pins.
-  if [[ -f .gitmodules ]] && git rev-parse --git-dir >/dev/null 2>&1; then
+  # With an explicit mirror, go straight to the direct fetch: `git submodule update`
+  # would use the URL recorded in .gitmodules and hit the network anyway.
+  local mirror_in_use=0
+  case "$url" in
+    http*|git://) ;;
+    *) mirror_in_use=1 ;;
+  esac
+
+  if [[ $mirror_in_use -eq 0 ]] && [[ -f .gitmodules ]] && git rev-parse --git-dir >/dev/null 2>&1; then
     info "bootstrapping $dir via git submodule (shallow)"
     if git submodule update --init --depth 1 -- "$dir" >&2 2>/dev/null && [[ -e "$marker" ]]; then
       ok "$dir at $(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
@@ -76,10 +96,12 @@ bootstrap() {
   ok "$dir at $(git -C "$dir" rev-parse --short HEAD)"
 }
 
-bootstrap extension-ci-tools https://github.com/duckdb/extension-ci-tools \
+bootstrap extension-ci-tools \
+         "${CITOOLS_GIT_MIRROR:-https://github.com/duckdb/extension-ci-tools}" \
          "$CITOOLS_SHA" extension-ci-tools/makefiles/duckdb_extension.Makefile
 
-bootstrap duckdb https://github.com/duckdb/duckdb \
+bootstrap duckdb \
+         "${DUCKDB_GIT_MIRROR:-https://github.com/duckdb/duckdb}" \
          "$DUCKDB_SHA" duckdb/CMakeLists.txt
 
 # The formatting configs are symlinks into the duckdb submodule and only resolve

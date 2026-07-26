@@ -265,13 +265,23 @@ ci-image:
 
 ## Cold-boot build + full test suite in Docker, building minimal VTK from source.
 ## This is the check to run before submitting to community-extensions.
+# When the local submodules are populated they are mounted as read-only git mirrors,
+# so the container clones the pinned commit locally instead of pulling ~500 MB from
+# GitHub every run. Set CI_VERIFY_NO_MIRROR=1 to force the real network fetch (which
+# is what CI does, since a GitHub runner has the bandwidth for it).
+CI_MIRROR_ARGS = $(if $(CI_VERIFY_NO_MIRROR),,\
+	$(if $(wildcard duckdb/CMakeLists.txt),-v $(PROJ_DIR)duckdb:/mirror/duckdb:ro -e DUCKDB_GIT_MIRROR=/mirror/duckdb,) \
+	$(if $(wildcard extension-ci-tools/makefiles/duckdb_extension.Makefile),-v $(PROJ_DIR)extension-ci-tools:/mirror/citools:ro -e CITOOLS_GIT_MIRROR=/mirror/citools,))
+
 ci-verify: ci-image
 	docker volume create $(DOCKER_CCACHE) >/dev/null
 	docker run --rm \
 		-v $(PROJ_DIR):/src:ro \
 		-v $(DOCKER_CCACHE):/ccache \
 		-e DUCKDB_VERSION_TAG=$(DUCKDB_VERSION_TAG) \
+		-e DUCKDB_SHA=$(DUCKDB_SUBMODULE_SHA) \
 		-e VTK_MODE=source \
+		$(CI_MIRROR_ARGS) \
 		$(DOCKER_IMAGE_CI)
 
 ## Same, but against the distro's packaged VTK. Proves we are not secretly tied to

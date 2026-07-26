@@ -74,7 +74,22 @@ else
   export VTK_DIR="$VTK_CMAKE_DIR"
 fi
 
-stage "3. Build (bootstrap must fetch duckdb + ci-tools by itself)"
+stage "3. Build (bootstrap must obtain duckdb + ci-tools by itself)"
+# A mirror only changes WHERE the pinned commit comes from; the SHA and the
+# post-checkout verification are unchanged. It is opt-in because it means this run
+# no longer exercises the network fetch — the build and tests are still fully cold.
+if [[ -n "${DUCKDB_GIT_MIRROR:-}" ]]; then
+  echo "duckdb source   : local mirror ${DUCKDB_GIT_MIRROR} (network fetch NOT exercised)"
+  git config --global --add safe.directory "${DUCKDB_GIT_MIRROR}" 2>/dev/null || true
+  git config --global --add safe.directory "${DUCKDB_GIT_MIRROR}/.git" 2>/dev/null || true
+else
+  echo "duckdb source   : github (full network fetch, ~500 MB)"
+fi
+if [[ -n "${CITOOLS_GIT_MIRROR:-}" ]]; then
+  git config --global --add safe.directory "${CITOOLS_GIT_MIRROR}" 2>/dev/null || true
+  git config --global --add safe.directory "${CITOOLS_GIT_MIRROR}/.git" 2>/dev/null || true
+fi
+export DUCKDB_GIT_MIRROR CITOOLS_GIT_MIRROR DUCKDB_SHA CITOOLS_SHA
 # No `make configure` on purpose: `make release` alone has to work, because that is
 # all the community-extensions CI runs.
 make release -j"$JOBS" >/tmp/build.log 2>&1 || { tail -60 /tmp/build.log; die "make release failed"; }
