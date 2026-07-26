@@ -123,6 +123,14 @@ print-vtk:
 	@grep -E "duck_vtk: (VTK_|VTK library|required|optional)" build/release/CMakeCache.txt 2>/dev/null \
 		|| echo "No configured build yet; run 'make release' first."
 
+## Verify the DuckDB 1.4/1.5 version shim against one or more source trees.
+## Seconds instead of the ~30 minutes a full build per version would take, and it
+## also proves each branch is REJECTED by the other version — without which the
+## shim could be silently redundant.
+##   make check-api-compat EXTRA_DUCKDB_SRC=/path/to/duckdb-1.4.5
+check-api-compat:
+	./scripts/check_api_compat.sh ./duckdb $(EXTRA_DUCKDB_SRC)
+
 ## Verify DUCKDB_VERSION_TAG matches the duckdb submodule pin, and that the
 ## installed CLI is the same build. A drift here produces an extension that
 ## silently refuses to load, so it is worth an explicit check.
@@ -161,7 +169,7 @@ uninstall:
 ## Everything: setup, build, and the full test suite.
 all-checks: configure release check
 
-.PHONY: configure install uninstall all-checks
+.PHONY: configure install uninstall all-checks check-api-compat
 
 ## Smoke test through the DuckDB Python client (needs `make install` first).
 ## Uses an ad-hoc uvx environment, so nothing is installed system-wide.

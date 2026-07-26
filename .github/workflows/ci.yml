@@ -79,6 +79,11 @@ jobs:
       - name: Verify the corpus is intact
         run: cd test/data && sha256sum -c MANIFEST.sha256 | grep -v ': OK$' || true
 
+      - name: Verify the 1.4/1.5 version shim
+        # Cheap 2x2 check that each registration branch compiles with its own
+        # DuckDB version and is rejected by the other.
+        run: make check-api-compat
+
       - name: sqllogictest
         run: make test
 
