@@ -42,7 +42,7 @@ duckdb -unsigned   # locally built extensions are unsigned
 | Compiler | GCC ≥ 11 or Clang ≥ 14, C++17. Verified with GCC 14.2 |
 | Build tools | CMake ≥ 3.16, Ninja (optional but much faster), ccache (optional, big win) |
 | VTK | ≥ 9.0. `make configure` builds a minimal 9.6.2 if none is found |
-| DuckDB | Built from the pinned submodule. Supports **1.4.x (LTS)** and **1.5.x** |
+| DuckDB | Built from the pinned submodule. **Verified against 1.5.4 and 1.4.5 (LTS)** — full suite green on both |
 
 Override the compiler the normal CMake way:
 
@@ -59,11 +59,21 @@ The extension's metadata footer records the DuckDB version it was built for, and
 make check-pin     # verifies submodule SHA, DUCKDB_VERSION_TAG, and the installed CLI agree
 ```
 
-To target the LTS line instead:
+To build against a different DuckDB, point `DUCKDB_SRCDIR` at its source tree —
+the Makefile notices the change and re-configures, so no manual `make clean`:
 
 ```bash
-git -C duckdb fetch --depth 1 origin <v1.4.x-sha> && git -C duckdb checkout FETCH_HEAD
-make clean && make release DUCKDB_VERSION_TAG=v1.4.5
+curl -fSL -o duckdb-1.4.5.tar.gz \
+  https://codeload.github.com/duckdb/duckdb/tar.gz/refs/tags/v1.4.5
+mkdir -p /tmp/duckdb-1.4.5 && tar xzf duckdb-1.4.5.tar.gz -C /tmp/duckdb-1.4.5 --strip-components=1
+make release DUCKDB_SRCDIR=/tmp/duckdb-1.4.5/ DUCKDB_VERSION_TAG=v1.4.5
+```
+
+A source tarball is far quicker than `git fetch` here (~50 MB vs ~425 MB of git
+objects). To check the version shim without a full build:
+
+```bash
+make check-api-compat EXTRA_DUCKDB_SRC=/tmp/duckdb-1.4.5
 ```
 
 The one API that differs between 1.4 and 1.5 is storage-extension registration. `CMakeLists.txt` detects it by **reading the actual DuckDB header** for the `StorageExtension::Register` symbol rather than parsing a version string, so nightlies and forks work too.
@@ -184,13 +194,18 @@ Array names are used **verbatim**, including spaces, dots, unicode and mixed cas
 ## Testing
 
 ```bash
-make test            # sqllogictest — 552 assertions
+make test            # sqllogictest — 594 assertions, green on 1.5.4 and 1.4.5
 make invariants      # 15 properties × every corpus file
 make oracle          # elementwise diff against an independent Python VTK
 make smoke           # build + load, including into the SYSTEM duckdb
 make python-smoke    # via the DuckDB Python client
 make check           # everything
+make check-api-compat EXTRA_DUCKDB_SRC=/tmp/duckdb-1.4.5   # version shim, in seconds
 ```
+
+Verified on **DuckDB 1.5.4 and 1.4.5 (LTS)**: 594 sqllogictest assertions and
+66 files × 15 invariants pass on both. Building against LTS is what caught a
+`CREATE INDEX` crash that 1.5.x masks — see the `BindCreateIndex` override.
 
 Correctness is established against **independent ground truth**, never against the extension itself: a Python VTK build that shares no code with the C++ one, plus hand-derived values for three ASCII fixtures (see `docs/research/04-test-data-corpus.md` §4). The 79-file corpus is committed with a checksum manifest.
 
