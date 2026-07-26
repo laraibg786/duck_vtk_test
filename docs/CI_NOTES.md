@@ -127,7 +127,62 @@ builds from source on every platform, every run. That is the dominant cost of th
 The Andium and next workflows in community-extensions are currently `if: false`, so
 only the default line builds on a submission PR.
 
-## 9. Node 20 deprecation warning is upstream, not ours
+## 9. A port's `description` must not contain blank lines
+
+vcpkg serialises a port's `description` into a Debian-style control paragraph, in which
+a **blank line terminates the paragraph**. A multi-line description expressed as a JSON
+array with `""` entries as separators therefore produces genuinely blank lines and
+fails vcpkg's own sanity check — *after* the port has finished building:
+
+```
+[sanity check] Failed to parse a serialized binary paragraph.
+vcpkg::serialize(const BinaryParagraph&, std::string&):8:5:
+  error: unexpected end of line, to span a blank line use "  ."
+```
+
+Two things make this expensive to debug. The message names `vcpkg::serialize`, not your
+port, and suggests re-bootstrapping vcpkg (which does not help). And it appears at the
+very end of a ~13-minute VTK build, so each iteration is slow.
+
+Keep `description` to a single line and put the rationale in `portfile.cmake`. Blank
+lines would have to be encoded as `" ."`, which is not worth the fragility.
+
+## 10. A submodule's `.git` may be a FILE, and its pointer is relative
+
+Relevant to anything that bind-mounts or copies a submodule directory.
+
+`git submodule update` produces a working tree whose `.git` is a **file** containing
+`gitdir: ../.git/modules/<name>`. A plain `git init` inside the directory produces a
+`.git` **directory**. Both are valid; they behave differently when the directory is
+moved or mounted in isolation, because the relative pointer escapes:
+
+```
+fatal: not a git repository: /mirror/citools/../.git/modules/extension-ci-tools
+```
+
+Resolve it first — `git -C <dir> rev-parse --absolute-git-dir` yields a real repository
+path for both shapes — and mount/copy that.
+
+This bites specifically when local and CI differ in how the submodule was created, as
+happened here: local used `git init`, CI used `git submodule update`, so the bug
+reproduced only in CI.
+
+## 11. `cancel-in-progress` will cancel your own run
+
+Obvious in hindsight. With
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+a second push cancels the first run mid-flight, and every job reports `cancelled`
+rather than `failure`. That is easy to misread as an infrastructure problem. Do not push
+while a run you care about is in flight — the community-extensions Linux jobs take
+~20 minutes and are the only coverage of a custom vcpkg port.
+
+## 12. Node 20 deprecation warning is upstream, not ours
 
 Every run annotates:
 
