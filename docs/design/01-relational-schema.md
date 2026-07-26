@@ -228,12 +228,17 @@ These are not edge cases to handle later; they are the cases a real CAE file hit
 | Array `num_tuples` < point/cell count | Emit the available tuples and **NULL** for the remainder. Do not error, do not truncate the table. Record the mismatch in `vtk_arrays.num_tuples` so it is visible. |
 | Array `num_tuples` > point/cell count | Emit the first `n` tuples, ignore the rest. Visible via `vtk_arrays.num_tuples`. |
 | File does not exist | `IOException` at `ATTACH`, message including the path. |
-| File exists but is not VTK / is truncated | `IOException` at `ATTACH` naming the file and the VTK error string. **Never** a crash, and never a silent empty dataset — a reader that fails must not be mistaken for an empty mesh. |
+| File exists but is not VTK | `IOException` at `ATTACH` naming the file. **Never** a crash, and never a silent empty dataset. |
+| File is **truncated** | `IOException` at `ATTACH`. **Measured in Phase 0: VTK gives no error signal for this.** `GetErrorCode()` returns `Success`, `num_points` reports the *declared* count, and the coordinates are uninitialised memory (a 0–2 mesh reported bounds up to 30761.77). The only signal is a `WARN` on VTK's output window: "Error reading ascii data. Possible mismatch of datasize with declaration." Detection therefore **requires** capturing the output window (see below) plus a post-read sanity check. See `docs/PHASE0_RESULTS.md` §4. |
 | Non-VTK content with a `.vtk` extension | Same as above. Extension is a hint, never the sole basis for dispatch. |
 | `NaN` / `Inf` in a float array | Pass through as-is. DuckDB `DOUBLE` represents both. Do **not** convert to NULL. |
 | Multiblock file in Phase 1 | Clear `NotImplementedException` at `ATTACH` naming the format and pointing at the roadmap — not a partial read of block 0. |
 
-VTK writes warnings to its own output window on stderr, which would pollute a DuckDB session. The implementation MUST install a custom `vtkOutputWindow` that captures messages so they can be attached to the thrown exception, instead of leaking to the terminal.
+VTK writes warnings to its own output window on stderr. The implementation MUST install a custom `vtkOutputWindow` that captures messages. **This is a correctness requirement, not a tidiness one** — Phase 0 established that it is the only way to detect some failures at all:
+
+1. **Escalate specific messages to `IOException`.** A blanket "any warning is fatal" rule is too aggressive (VTK warns about benign things), so use a curated list, at minimum: `"Possible mismatch of datasize with declaration"`, `"Error reading ascii data"`, `"Error reading binary data"`, `"Unrecognized file type"`. The thrown exception carries the captured text.
+2. **Discard probe-phase messages.** Reader auto-detection tries XML first, and `ReadOutputType` writes a red `ERR| ... could not load <file>` line for *every* legacy `.vtk` file — including ones that then read perfectly. Leaking that would make every successful legacy read look like a failure. The scope must be active before the reader factory runs.
+3. **Post-read sanity check, as defence in depth.** Verify the coordinate array's actual tuple count matches the reported point count, and that the bounds are finite. This catches the truncated-file case even if VTK's warning wording changes in a future release.
 
 ## 9. Known Phase-1 costs (accepted, documented, not bugs)
 

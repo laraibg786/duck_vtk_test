@@ -213,6 +213,37 @@ find /home/linuxbrew/.linuxbrew/opt/vtk/lib -name 'libvtkIOCGNS*' \
 
 ## 2. Auto-detecting a reader from an arbitrary path
 
+> ### ⚠ CORRECTION — measured on VTK 9.6.2 in Phase 0, supersedes §2.2 and §2.3 below
+>
+> **`vtkXMLGenericDataObjectReader::CanReadFile()` returns 0 for every file, including a
+> perfectly valid `.vtu`.** It is not overridden on the *generic* reader. The
+> `ReaderFactory` in §2.3 gates on it and therefore sends every XML file down the
+> legacy path and reports it unreadable. Do not use it.
+>
+> Measured against `test/data/xml/tetra.vtu` (a valid 22-point, 3-cell UnstructuredGrid):
+>
+> | Call | Result |
+> |---|---|
+> | `vtkXMLGenericDataObjectReader::CanReadFile(f)` | **0** (broken) |
+> | `vtkXMLGenericDataObjectReader::CanReadFile(f)` after `SetFileName` | **0** (broken) |
+> | `vtkXMLGenericDataObjectReader::ReadOutputType(f, parallel)` | **4** = `VTK_UNSTRUCTURED_GRID` ✅ |
+> | `vtkXMLUnstructuredGridReader::CanReadFile(f)` (concrete reader) | **1** ✅ |
+>
+> **Use `int ReadOutputType(const char *name, bool &parallel)`** — an instance method,
+> returning a `VTK_*` data-object type id or a negative value for non-XML. Its
+> `parallel` out-param also flags `.pvtu`-style files, which Phase 1 must reject.
+> `CanReadFile` *is* reliable on the concrete readers, just not the generic one.
+>
+> Two further Phase 0 findings that affect this section:
+> - `ReadOutputType` **writes a red `ERR| ... could not load <file>` line to VTK's output
+>   window for every legacy `.vtk` file**, even ones that then read perfectly. The error
+>   scope of §8.2 must be active during probing and must discard probe-phase messages.
+> - A **truncated** legacy file is silently accepted: `GetErrorCode()` returns `Success`,
+>   the declared point count is reported, and coordinates are uninitialised memory. The
+>   only signal is a `WARN` on the output window. See `docs/PHASE0_RESULTS.md` §4 — this
+>   makes §8.2's error capture a correctness requirement, not a cosmetic one.
+
+
 VTK gives you two orthogonal "any file of this family" readers, plus a
 manual sniff you can do yourself for the ultimate top-level dispatch (legacy
 vs. XML vs. HDF5 vs. CAE-specific).
@@ -1375,17 +1406,16 @@ be re-checked directly against
 `/home/linuxbrew/.linuxbrew/opt/vtk/include/vtk-9.6/` headers as soon as
 installation finishes, before relying on this document for implementation:
 
-1. **`vtkUnstructuredGrid::GetCellTypesArray()`** — confirm exact method
-   name and return type (`vtkUnsignedCharArray*` vs. plain `vtkDataArray*`).
-   Two doc-fetch passes gave slightly different pictures; §3.3 uses the name
-   given in this task's own question text, which should match, but verify.
-2. **`vtkCellTypes::GetClassNameFromTypeId`** — reportedly deprecated as of
-   VTK 9.6.0 in favor of a `vtkCellTypeUtilities` equivalent. Check whether
-   `vtkCellTypeUtilities.h` exists in 9.6.2 and whether the old static still
-   works (likely yes, with a deprecation warning) or has been removed.
-3. **`vtkXMLGenericDataObjectReader::ReadOutputType`** — confirm whether
-   this is `static` or an instance method, and its exact signature
-   (`(const char*, bool&)` vs. other overloads).
+1. ~~`vtkUnstructuredGrid::GetCellTypesArray()`~~ — **partially RESOLVED in Phase 0.**
+   `vtkDataSet::GetCellTypes(vtkCellTypes*)` is **deprecated** in 9.6:
+   `vtkDataSet.h:183` says "Use `GetDistinctCellTypes(vtkCellTypes* types)` instead".
+   Use `GetDistinctCellTypes`. Building against the old name emits
+   `-Wdeprecated-declarations`, which matters if warnings-as-errors is on.
+2. **`vtkCellTypes::GetClassNameFromTypeId`** — still unverified, but *moot*:
+   design §5 mandates a static `VTK_*` name table rather than a runtime VTK call.
+3. ~~`ReadOutputType` signature~~ — **RESOLVED in Phase 0.** It is an **instance**
+   method: `int ReadOutputType(const char *name, bool &parallel)`. Verified working;
+   see the correction box at the top of §2.
 4. **`vtkAlgorithm::Update()` return type** — `bool`/`vtkTypeBool` vs. the
    long-standing `void` — this changed at some point in the VTK 9 series and
    the exact 9.6.2 signature needs confirming (affects whether you can use

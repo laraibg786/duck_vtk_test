@@ -20,6 +20,7 @@
 #include <vtkCellTypes.h>
 #include <vtkDataArray.h>
 #include <vtkDataSet.h>
+#include <vtkErrorCode.h>
 #include <vtkGenericDataObjectReader.h>
 #include <vtkNew.h>
 #include <vtkPointData.h>
@@ -79,14 +80,25 @@ void DumpFieldData(const char *label, vtkFieldData *fd) {
 }
 
 vtkSmartPointer<vtkDataObject> ReadAny(const std::string &path, std::string &reader_used) {
-  // Try the XML family first via CanReadFile, then fall back to legacy.
+  // Try the XML family first, then fall back to legacy.
   // Content-based, not extension-based, per the design doc.
+  //
+  // IMPORTANT, measured on VTK 9.6.2 (see docs/research/03 §2.3 correction):
+  // vtkXMLGenericDataObjectReader::CanReadFile() returns 0 even for a perfectly
+  // valid .vtu — it is not overridden on the generic reader, so it must NOT be
+  // used for dispatch. `ReadOutputType()` is the working sniffing API: it returns
+  // a VTK_* data-object type id (e.g. 4 == VTK_UNSTRUCTURED_GRID) or -1 if the
+  // file is not readable XML. CanReadFile IS reliable on the *concrete* readers
+  // (vtkXMLUnstructuredGridReader etc.), just not on the generic one.
   {
     vtkNew<vtkXMLGenericDataObjectReader> xml;
-    if (xml->CanReadFile(path.c_str())) {
+    bool parallel = false;
+    const int output_type = xml->ReadOutputType(path.c_str(), parallel);
+    if (output_type >= 0) {
       xml->SetFileName(path.c_str());
       xml->Update();
       reader_used = "vtkXMLGenericDataObjectReader";
+      std::printf("xml_output_type=%d xml_parallel=%d\n", output_type, parallel ? 1 : 0);
       return vtkSmartPointer<vtkDataObject>(xml->GetOutput());
     }
   }
@@ -97,6 +109,18 @@ vtkSmartPointer<vtkDataObject> ReadAny(const std::string &path, std::string &rea
       legacy->CloseVTKFile();
       legacy->Update();
       reader_used = "vtkGenericDataObjectReader";
+      // MUST check the error code. A truncated legacy file does NOT make Update()
+      // fail: VTK reads "POINTS 27 float", allocates 27 points, hits EOF, and
+      // hands back an object that *looks* valid (num_points == 27) with unfilled
+      // coordinates. Reporting that as data would violate design §8, which
+      // forbids confusing a failed read with a valid or empty mesh.
+      const unsigned long err = legacy->GetErrorCode();
+      std::printf("legacy_error_code=%lu legacy_error_string=%s\n", err,
+                  vtkErrorCode::GetStringFromErrorCode(err));
+      if (err != vtkErrorCode::NoError) {
+        reader_used = "vtkGenericDataObjectReader(FAILED)";
+        return nullptr;
+      }
       return vtkSmartPointer<vtkDataObject>(legacy->GetOutput());
     }
   }
@@ -165,8 +189,11 @@ int main(int argc, char **argv) {
   // ds->GetCell(i), which returns a shared per-object scratch object and is a
   // data-race landmine once scans go parallel.
   {
+    // GetDistinctCellTypes, not GetCellTypes: the latter is deprecated in VTK 9.6
+    // ("Use GetDistinctCellTypes(vtkCellTypes* types) instead", vtkDataSet.h:183)
+    // and building against it emits -Wdeprecated-declarations.
     vtkNew<vtkCellTypes> types;
-    ds->GetCellTypes(types);
+    ds->GetDistinctCellTypes(types);
     std::printf("distinct_cell_types=%d\n", static_cast<int>(types->GetNumberOfTypes()));
     for (int i = 0; i < types->GetNumberOfTypes(); ++i) {
       std::printf("cell_type[%d]=%d\n", i, static_cast<int>(types->GetCellType(i)));

@@ -25,6 +25,8 @@ set(DUCK_VTK_REQUIRED_COMPONENTS
     CommonCore            # vtkObject, vtkDataArray, vtkSmartPointer, type constants
     CommonDataModel       # vtkDataSet, vtkUnstructuredGrid, vtkPolyData, vtkCellArray
     CommonExecutionModel  # vtkAlgorithm, the pipeline (Update/UpdateInformation)
+    CommonMisc            # vtkErrorCode. NOT in CommonCore — omitting it gives
+                          # a 'DSO missing from command line' link error.
     IOLegacy              # legacy .vtk readers
     IOXML                 # .vtu/.vtp/.vts/.vtr/.vti and the parallel/multiblock variants
 )
@@ -32,8 +34,10 @@ set(DUCK_VTK_REQUIRED_COMPONENTS
 # Optional components. Phase 4 formats. Requested separately so a VTK build
 # lacking them degrades to "that format is unsupported" rather than failing the
 # whole configure step.
+# NOTE: IOGeometry is deliberately absent. It requires FiltersHybrid ->
+# RenderingCore, so it cannot exist in a rendering-free VTK build; requesting it
+# makes VTK's own configure step fail. See scripts/build_minimal_vtk.sh.
 set(DUCK_VTK_OPTIONAL_COMPONENTS
-    IOGeometry            # OBJ/STL/other geometry readers
     IOEnSight             # EnSight Gold — common in CFD
     IOExodus              # ExodusII (.ex2) — common in FEA
     IOCGNS                # CGNS — CFD standard
@@ -46,9 +50,15 @@ set(DUCK_VTK_OPTIONAL_COMPONENTS
 # Locate a VTK config directory if the user did not specify one
 # ---------------------------------------------------------------------------
 if(NOT DEFINED VTK_DIR OR VTK_DIR STREQUAL "")
-  # Candidate prefixes in priority order. Homebrew first (this project's
-  # documented default), then a conventional system install.
+  # Candidate prefixes in priority order. The minimal source build from
+  # scripts/build_minimal_vtk.sh comes FIRST because it is this project's
+  # documented default (see architecture doc §5): it is ABI-matched to the
+  # compiler building the extension, whereas a Homebrew bottle is not.
+  file(GLOB _duck_vtk_local_prefixes "$ENV{HOME}/.local/vtk-*")
+  list(SORT _duck_vtk_local_prefixes)
+  list(REVERSE _duck_vtk_local_prefixes)      # newest version first
   set(_duck_vtk_prefixes
+      ${_duck_vtk_local_prefixes}
       "$ENV{HOMEBREW_PREFIX}/opt/vtk"
       "/home/linuxbrew/.linuxbrew/opt/vtk"
       "/opt/homebrew/opt/vtk"
@@ -80,9 +90,12 @@ if(NOT VTK_FOUND)
     "  Tried VTK_DIR='${VTK_DIR}'\n"
     "\n"
     "Install one of the following, then re-run:\n"
-    "  * Homebrew (no root needed):  brew install vtk\n"
-    "  * Debian/Ubuntu:              sudo apt install libvtk9-dev\n"
-    "  * A minimal source build:     see docs/design/03-architecture-and-roadmap.md\n"
+    "  * RECOMMENDED, no root needed, ABI-matched to your compiler:\n"
+    "        ./scripts/build_minimal_vtk.sh\n"
+    "  * Debian/Ubuntu system package (needs root, VTK 9.3):\n"
+    "        sudo apt install libvtk9-dev\n"
+    "  * Homebrew bottle (large: pulls Qt/mesa/llvm; carries an ABI risk):\n"
+    "        brew install vtk\n"
     "\n"
     "If VTK is installed somewhere unusual, pass it explicitly:\n"
     "  make release EXT_FLAGS='-DVTK_DIR=/path/to/lib/cmake/vtk-9.6'\n")
