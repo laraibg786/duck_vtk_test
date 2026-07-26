@@ -41,6 +41,12 @@ if [[ -n "$(ls -A "$HOME"/.local/vtk-* 2>/dev/null)" ]]; then
 fi
 
 stage "1. Clone the repository (not a copy of the working tree)"
+# The source is bind-mounted from the host, so its files are owned by a UID that
+# does not exist in this container and git refuses to touch it ("detected dubious
+# ownership"). Marking just the mount read-safe is the narrow fix; the container is
+# ephemeral and the mount is read-only.
+git config --global --add safe.directory "${REPO_URL:-/src}" 2>/dev/null || true
+git config --global --add safe.directory "${REPO_URL:-/src}/.git" 2>/dev/null || true
 rm -rf /work/duck_vtk
 git clone --quiet "${REPO_URL:-/src}" /work/duck_vtk || die "clone failed"
 cd /work/duck_vtk
