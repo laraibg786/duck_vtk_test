@@ -87,8 +87,23 @@ cmake -S "VTK-$VTK_VERSION" -B build -G Ninja \
   -DVTK_MODULE_ENABLE_VTK_CommonExecutionModel=YES \
   -DVTK_MODULE_ENABLE_VTK_IOLegacy=YES \
   -DVTK_MODULE_ENABLE_VTK_IOXML=YES \
-  -DVTK_MODULE_ENABLE_VTK_IOGeometry=YES \
+  -DVTK_MODULE_ENABLE_VTK_IOParallelXML=YES \
   -DVTK_MODULE_ENABLE_VTK_FiltersCore=YES
+# Deliberately NOT enabled:
+#   VTK_MODULE_ENABLE_VTK_IOGeometry=YES
+#     IOGeometry (OBJ/STL/PLY readers) depends on FiltersHybrid, which depends on
+#     RenderingCore. With VTK_GROUP_ENABLE_Rendering=NO the configure step fails:
+#       "The VTK::IOGeometry module ... requires the disabled module
+#        VTK::FiltersHybrid (disabled due to the VTK::RenderingCore module not
+#        being available)"
+#     Those formats are out of Phase 1 scope. If they are ever wanted, either
+#     enable RenderingCore (dragging in OpenGL) or read them via a different
+#     module — do not "fix" this by turning rendering back on casually.
+#   IOExodus / IOCGNS / IOHDF
+#     Need external netcdf / cgns / hdf5. Phase 4 concerns; adding them means
+#     installing those libraries first. cmake/DuckVTKFindVTK.cmake probes for
+#     them as OPTIONAL components, so their absence degrades gracefully to
+#     "that format is unsupported" rather than breaking the build.
 
 info "Building with $JOBS jobs"
 cmake --build build --parallel "$JOBS"
