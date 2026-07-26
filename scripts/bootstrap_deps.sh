@@ -53,8 +53,6 @@ info() { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[1;32m  ok\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 
-have_content() { [[ -n "$(ls -A "$1" 2>/dev/null)" ]]; }
-
 bootstrap() {
   local dir="$1" url="$2" sha="$3" marker="$4"
 

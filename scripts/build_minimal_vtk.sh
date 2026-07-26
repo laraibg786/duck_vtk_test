@@ -64,7 +64,18 @@ info "Configuring minimal build (no rendering / Qt / Python / testing)"
 # five modules we link. VTK resolves their dependencies automatically (IOXML
 # pulls IOXMLParser, expat, etc.), so this yields the smallest closure that can
 # still read every serial VTK mesh format.
+# Route VTK's own compilation through ccache when available. VTK is ~1275
+# translation units, so on a second build (a repeated container run, a CI cache hit,
+# a version bump that touches little) this is the difference between ~20 minutes and
+# under one. Deliberately not forced if the caller already set a launcher.
+CCACHE_ARG=""
+if [[ -z "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ]] && command -v ccache >/dev/null 2>&1; then
+  CCACHE_ARG="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache"
+  info "using ccache for the VTK build"
+fi
+
 cmake -S "VTK-$VTK_VERSION" -B build -G Ninja \
+  $CCACHE_ARG \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
   -DBUILD_SHARED_LIBS=ON \
