@@ -174,5 +174,9 @@ jobs:
       ci_tools_version: ${{ matrix.ci_tools_version }}
       # See docs/CI_NOTES.md §1-2: musl is opt-in on v1.5 but not on v1.4-andium,
       # so it must be excluded by name or the LTS line builds it regardless.
-      exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl"
+      #
+      # windows_amd64_mingw: DuckDB's own tools/sqlite3_api_wrapper does not compile
+      # under rtools42 mingw (std::byte vs. windows.h `byte`). See the fuller note in
+      # community-extension/description.yml, which this must stay in step with.
+      exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw"
       vcpkg_commit: ${{ matrix.vcpkg_commit }}
