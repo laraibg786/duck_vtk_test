@@ -101,9 +101,9 @@ cmake -S "VTK-$VTK_VERSION" -B build -G Ninja \
   -DVTK_MODULE_ENABLE_VTK_CommonMisc=YES \
   -DVTK_MODULE_ENABLE_VTK_IOLegacy=YES \
   -DVTK_MODULE_ENABLE_VTK_IOXML=YES \
-  -DVTK_MODULE_ENABLE_VTK_IOParallelXML=YES \
   -DVTK_MODULE_ENABLE_VTK_FiltersCore=YES
 # Deliberately NOT enabled:
+#   VTK_MODULE_ENABLE_VTK_IOParallelXML=YES — writers only, and we are read-only.
 #   VTK_MODULE_ENABLE_VTK_IOGeometry=YES
 #     IOGeometry (OBJ/STL/PLY readers) depends on FiltersHybrid, which depends on
 #     RenderingCore. With VTK_GROUP_ENABLE_Rendering=NO the configure step fails:

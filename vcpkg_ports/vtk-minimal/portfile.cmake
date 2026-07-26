@@ -87,8 +87,14 @@ vcpkg_cmake_configure(
         -DVTK_MODULE_ENABLE_VTK_CommonMisc=YES
         -DVTK_MODULE_ENABLE_VTK_IOLegacy=YES
         -DVTK_MODULE_ENABLE_VTK_IOXML=YES
-        -DVTK_MODULE_ENABLE_VTK_IOParallelXML=YES
         -DVTK_MODULE_ENABLE_VTK_FiltersCore=YES
+
+        # IOParallelXML is deliberately NOT enabled. All 20 of its classes are
+        # WRITERS (vtkXMLP*Writer and writer helpers) — every vtkXMLP*Reader lives
+        # in IOXML — and we are read-only. Verified: nothing links it
+        # (`objdump -p libvtkIOXML` does not list it), and the .pvtu/.pvti
+        # rejection in src/vtk/vtk_dataset.cpp is a pure string sniff on the XML
+        # type name, so it needs no parallel module at all.
 
         # NOT enabled: VTK_MODULE_ENABLE_VTK_IOGeometry. It requires
         # FiltersHybrid, which requires RenderingCore, so with rendering disabled

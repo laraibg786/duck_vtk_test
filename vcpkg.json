@@ -4,9 +4,12 @@
     "Their CI provides a pinned vcpkg and sets VCPKG_TOOLCHAIN_PATH, so every",
     "third-party library must be declared here rather than found on the system.",
     "vtk-minimal is our own overlay port (vcpkg_ports/vtk-minimal). vcpkg's",
-    "official `vtk` port is unusable here: rendering is in its BASE port, giving 26",
-    "transitive dependencies including glew/freetype/gl2ps/qt. See that port's",
-    "vcpkg.json for the full reasoning."
+    "official `vtk` port is unusable here: its portfile HARDCODES",
+    "VTK_GROUP_ENABLE_Rendering=YES with no feature to turn it off, and carries 26",
+    "base manifest entries including glew, gl2ps and freetype, plus a second",
+    "VTK-derived host build (vtk-compile-tools). Qt is an opt-in feature there, not",
+    "a default dependency — an earlier version of this note said otherwise.",
+    "See that port's vcpkg.json for the full reasoning."
   ],
   "name": "duck-vtk",
   "version": "0.1.0",

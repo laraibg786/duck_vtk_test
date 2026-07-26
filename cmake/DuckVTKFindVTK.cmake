@@ -73,8 +73,7 @@ set(DUCK_VTK_OPTIONAL_COMPONENTS
     IOExodus              # ExodusII (.ex2) — common in FEA
     IOCGNS                # CGNS — CFD standard
     IOHDF                 # VTKHDF
-    IOParallelXML
-    FiltersCore           # only if a derived-quantity feature needs it
+    FiltersCore           # forced transitively by IOLegacy; see the note below
 )
 
 # ---------------------------------------------------------------------------
