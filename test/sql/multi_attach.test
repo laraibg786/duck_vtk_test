@@ -1,0 +1,90 @@
+# name: test/sql/multi_attach.test
+# description: several VTK databases attached at once must stay distinct.
+#
+#   REGRESSION TEST. These queries once returned the FIRST dataset's data for every
+#   subquery. Cause: DuckDB's common-subplan optimizer builds its signature by
+#   serializing each operator, and with no serialize callback LogicalGet falls back
+#   to the function's input parameters. On the ATTACH path there are none — the path
+#   lives only in bind data — so scans of different files serialized identically,
+#   were judged the same subplan, and one was materialised as a CTE that both read.
+#
+#   Fixed by implementing TableFunction::serialize/deserialize (see VtkSerialize).
+#   The standalone vtk_*(path) functions never had the bug, because their path IS an
+#   input parameter — which is exactly why this needs its own test.
+# group: [vtk]
+
+require vtk
+
+statement ok
+ATTACH 'test/data/xml/vase.vti' AS i (TYPE vtk);
+
+statement ok
+ATTACH 'test/data/xml/cow.vtp' AS pd (TYPE vtk);
+
+statement ok
+ATTACH 'test/data/legacy/uGridEx.vtk' AS u (TYPE vtk);
+
+statement ok
+ATTACH 'test/data/xml/StructuredGrid.vts' AS s (TYPE vtk);
+
+# The exact shape that used to fail: one scalar subquery per database.
+query IIII
+SELECT (SELECT file_path FROM i.vtk_info), (SELECT file_path FROM pd.vtk_info),
+       (SELECT file_path FROM u.vtk_info), (SELECT file_path FROM s.vtk_info);
+----
+test/data/xml/vase.vti	test/data/xml/cow.vtp	test/data/legacy/uGridEx.vtk	test/data/xml/StructuredGrid.vts
+
+query IIII
+SELECT (SELECT num_points FROM i.vtk_info), (SELECT num_points FROM pd.vtk_info),
+       (SELECT num_points FROM u.vtk_info), (SELECT num_points FROM s.vtk_info);
+----
+871125	2903	27	648
+
+query IIII
+SELECT (SELECT dataset_class FROM i.vtk_info), (SELECT dataset_class FROM pd.vtk_info),
+       (SELECT dataset_class FROM u.vtk_info), (SELECT dataset_class FROM s.vtk_info);
+----
+vtkImageData	vtkPolyData	vtkUnstructuredGrid	vtkStructuredGrid
+
+# Two subqueries over the SAME file must still be allowed to share a subplan —
+# the fix must not have simply disabled the optimisation.
+query II
+SELECT (SELECT num_points FROM i.vtk_info), (SELECT num_cells FROM i.vtk_info);
+----
+871125	843600
+
+# The data tables, not just the 1-row info table.
+query II
+SELECT (SELECT count(*) FROM u.points), (SELECT count(*) FROM pd.points);
+----
+27	2903
+
+query II
+SELECT (SELECT count(*) FROM u.cells), (SELECT count(*) FROM u.cell_points);
+----
+12	51
+
+# Joining across two attached VTK databases.
+query I
+SELECT count(*) FROM u.points a, s.points b WHERE a.point_id = 0 AND b.point_id < 3;
+----
+3
+
+# Same file attached twice under different aliases: both must work and agree.
+statement ok
+ATTACH 'test/data/legacy/uGridEx.vtk' AS u2 (TYPE vtk);
+
+query III
+SELECT (SELECT num_points FROM u.vtk_info), (SELECT num_points FROM u2.vtk_info),
+       (SELECT num_points FROM u.vtk_info) = (SELECT num_points FROM u2.vtk_info);
+----
+27	27	true
+
+statement ok
+DETACH u2;
+
+# Detaching one must not disturb the others (they share a dataset cache).
+query II
+SELECT (SELECT num_points FROM u.vtk_info), (SELECT num_points FROM i.vtk_info);
+----
+27	871125

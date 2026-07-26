@@ -1,10 +1,12 @@
 #include "vtk/vtk_dataset.hpp"
 
 #include "vtk/vtk_error_scope.hpp"
+#include "vtk/vtk_file_source.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 
+#include <vtkCharArray.h>
 #include <vtkCellData.h>
 #include <vtkCellTypes.h>
 #include <vtkDataArray.h>
@@ -24,6 +26,11 @@
 #include <vtkStringArray.h>
 #include <vtkType.h>
 #include <vtkXMLGenericDataObjectReader.h>
+#include <vtkXMLImageDataReader.h>
+#include <vtkXMLPolyDataReader.h>
+#include <vtkXMLRectilinearGridReader.h>
+#include <vtkXMLStructuredGridReader.h>
+#include <vtkXMLUnstructuredGridReader.h>
 
 #include <cmath>
 #include <filesystem>
@@ -169,6 +176,126 @@ vtkSmartPointer<vtkDataObject> ReadDataObject(const std::string &path, VtkErrorS
 	return out ? vtkSmartPointer<vtkDataObject>(out) : nullptr;
 }
 
+//! Sniffs the dataset type out of the first bytes of an XML VTK file.
+//!
+//! Needed because the filename-based sniffing API (ReadOutputType) cannot be used
+//! when the bytes came from a URL — it opens the path itself. Rather than hoping
+//! vtkXMLGenericDataObjectReader behaves correctly in ReadFromInputString mode,
+//! parse the `type="..."` attribute from the header and instantiate the concrete
+//! reader. That is deterministic and relies on documented format structure.
+std::string SniffXmlDatasetType(const std::string &bytes) {
+	// The attribute lives in the <VTKFile ...> tag, always near the start.
+	const size_t window = bytes.size() < 4096 ? bytes.size() : 4096;
+	const std::string head = bytes.substr(0, window);
+	const auto tag = head.find("<VTKFile");
+	if (tag == std::string::npos) {
+		return "";
+	}
+	const auto key = head.find("type=", tag);
+	if (key == std::string::npos) {
+		return "";
+	}
+	auto open = head.find_first_of("\"'", key);
+	if (open == std::string::npos) {
+		return "";
+	}
+	const char quote = head[open];
+	const auto close = head.find(quote, open + 1);
+	if (close == std::string::npos) {
+		return "";
+	}
+	return head.substr(open + 1, close - open - 1);
+}
+
+//! Reads a VTK dataset from an in-memory buffer.
+//!
+//! `bytes` MUST outlive the returned object's construction: the readers are given a
+//! vtkCharArray wrapping our buffer with save=1, which avoids a second full copy but
+//! means VTK does not own it (vtkDataReader.h is explicit that deleting it early
+//! causes "bad things ... during a pipeline update").
+vtkSmartPointer<vtkDataObject> ReadDataObjectFromMemory(const std::string &bytes, VtkErrorScope &scope,
+                                                        std::string &reader_class, bool &was_parallel) {
+	was_parallel = false;
+	if (bytes.empty()) {
+		reader_class = "<none>";
+		return nullptr;
+	}
+
+	// Wrap without copying. const_cast is safe: the readers only read.
+	vtkNew<vtkCharArray> buffer;
+	buffer->SetNumberOfComponents(1);
+	buffer->SetArray(const_cast<char *>(bytes.data()), static_cast<vtkIdType>(bytes.size()), /*save=*/1);
+
+	const std::string xml_type = SniffXmlDatasetType(bytes);
+	if (!xml_type.empty()) {
+		// Parallel/partitioned variants are named P<Type> and are unsupported; flag
+		// rather than silently reading one piece.
+		if (xml_type.rfind('P', 0) == 0 && xml_type.size() > 1 && std::isupper(xml_type[1])) {
+			was_parallel = true;
+		}
+		vtkSmartPointer<vtkXMLReader> reader;
+		if (xml_type == "UnstructuredGrid") {
+			reader = vtkSmartPointer<vtkXMLUnstructuredGridReader>::New();
+		} else if (xml_type == "PolyData") {
+			reader = vtkSmartPointer<vtkXMLPolyDataReader>::New();
+		} else if (xml_type == "ImageData") {
+			reader = vtkSmartPointer<vtkXMLImageDataReader>::New();
+		} else if (xml_type == "RectilinearGrid") {
+			reader = vtkSmartPointer<vtkXMLRectilinearGridReader>::New();
+		} else if (xml_type == "StructuredGrid") {
+			reader = vtkSmartPointer<vtkXMLStructuredGridReader>::New();
+		}
+		if (!reader) {
+			// A recognised XML wrapper of a type we do not support (multiblock,
+			// hypertreegrid, a parallel variant, ...). Name it in the error.
+			reader_class = "<unsupported:" + xml_type + ">";
+			return nullptr;
+		}
+		reader->SetReadFromInputString(1);
+		reader->SetInputArray(buffer);
+		reader->Update();
+		reader_class = std::string(reader->GetClassName()) + " (in-memory)";
+		auto *out = reader->GetOutputAsDataSet();
+		return out ? vtkSmartPointer<vtkDataObject>(out) : nullptr;
+	}
+
+    // Legacy: same ReadAll* requirement as the file path, or arrays are dropped.
+	vtkNew<vtkGenericDataObjectReader> legacy;
+	legacy->SetReadFromInputString(1);
+	legacy->SetInputArray(buffer);
+	legacy->ReadAllScalarsOn();
+	legacy->ReadAllVectorsOn();
+	legacy->ReadAllNormalsOn();
+	legacy->ReadAllTensorsOn();
+	legacy->ReadAllColorScalarsOn();
+	legacy->ReadAllTCoordsOn();
+	legacy->ReadAllFieldsOn();
+	legacy->Update();
+	reader_class = "vtkGenericDataObjectReader (in-memory)";
+	if (legacy->GetErrorCode() != vtkErrorCode::NoError) {
+		return nullptr;
+	}
+	auto *out = legacy->GetOutput();
+	if (out && (vtkDataSet::SafeDownCast(out) ||
+	            (out->GetFieldData() && out->GetFieldData()->GetNumberOfArrays() > 0))) {
+		return vtkSmartPointer<vtkDataObject>(out);
+	}
+
+	// Field-only legacy files need the dedicated reader, exactly as on the file path.
+	scope.Clear();
+	vtkNew<vtkDataObjectReader> field_reader;
+	field_reader->SetReadFromInputString(1);
+	field_reader->SetInputArray(buffer);
+	field_reader->ReadAllFieldsOn();
+	field_reader->Update();
+	auto *field_out = field_reader->GetOutput();
+	if (field_out && field_out->GetFieldData() && field_out->GetFieldData()->GetNumberOfArrays() > 0) {
+		reader_class = "vtkDataObjectReader (in-memory)";
+		return vtkSmartPointer<vtkDataObject>(field_out);
+	}
+	return nullptr;
+}
+
 void AppendActiveRole(std::string &target, const char *role) {
 	if (!target.empty()) {
 		target += ",";
@@ -260,9 +387,25 @@ VtkDataset::~VtkDataset() {
 	}
 }
 
-std::shared_ptr<VtkDataset> VtkDataset::Read(const std::string &path) {
-	if (!FileExists(path)) {
-		throw IOException("duck_vtk: cannot read '%s': no such file", path);
+std::shared_ptr<VtkDataset> VtkDataset::Read(const std::string &path, VtkFileSource *source) {
+	// A local-only source keeps behaviour identical to before remote support when no
+	// ClientContext was available to give us the VFS.
+	std::unique_ptr<VtkFileSource> fallback;
+	if (!source) {
+		fallback = VtkMakeLocalFileSource();
+		source = fallback.get();
+	}
+
+	const bool local = source->IsLocalPath(path);
+	// The memory path is normally only reachable for remote objects, which would
+	// leave it untested without a filesystem extension loaded. The env hook lets the
+	// whole corpus be run through it and compared against the file path.
+	const bool via_memory = !local || VtkForceMemoryReads();
+
+	if (!source->Exists(path)) {
+		throw IOException("duck_vtk: cannot read '%s': no such file%s", path,
+		                  local ? "" : " (or it is unreachable — is the relevant filesystem "
+		                               "extension loaded, e.g. INSTALL httpfs; LOAD httpfs;)");
 	}
 
 	// The scope must be live before any probing, because probe failures write to
@@ -271,12 +414,30 @@ std::shared_ptr<VtkDataset> VtkDataset::Read(const std::string &path) {
 
 	std::string reader_class;
 	bool was_parallel = false;
-	vtkSmartPointer<vtkDataObject> object = ReadDataObject(path, scope, reader_class, was_parallel);
+	vtkSmartPointer<vtkDataObject> object;
+	// Declared here, not inside the branch: the readers wrap this buffer without
+	// copying it, so it must outlive the parse.
+	std::string bytes;
+
+	if (via_memory) {
+		source->ReadAll(path, bytes);
+		object = ReadDataObjectFromMemory(bytes, scope, reader_class, was_parallel);
+	} else {
+		object = ReadDataObject(path, scope, reader_class, was_parallel);
+	}
 
 	if (!object) {
 		auto detail = scope.Fatal();
 		if (detail.empty()) {
-			detail = "no VTK reader recognised the file contents";
+			// Name the unsupported XML type when the sniffer identified one, rather
+			// than the useless "no reader recognised it".
+			if (reader_class.rfind("<unsupported:", 0) == 0) {
+				detail = "unsupported XML dataset type " +
+				         reader_class.substr(13, reader_class.size() - 14) +
+				         "; supported: UnstructuredGrid, PolyData, ImageData, RectilinearGrid, StructuredGrid";
+			} else {
+				detail = "no VTK reader recognised the file contents";
+			}
 		}
 		throw IOException("duck_vtk: cannot read '%s': %s", path, detail);
 	}
@@ -431,6 +592,7 @@ std::string VtkDataset::DebugDump() const {
 	out += StringUtil::Format("path            = %s\n", path);
 	out += StringUtil::Format("file_size_bytes = %lld\n", (long long)file_size_bytes);
 	out += StringUtil::Format("reader_class    = %s\n", reader_class);
+	out += StringUtil::Format("source_kind     = %s\n", source_kind);
 	out += StringUtil::Format("dataset_class   = %s\n", dataset_class);
 	out += StringUtil::Format("num_points      = %lld\n", (long long)num_points);
 	out += StringUtil::Format("num_cells       = %lld\n", (long long)num_cells);
@@ -456,7 +618,7 @@ std::string VtkDataset::DebugDump() const {
 // Dataset cache
 //===--------------------------------------------------------------------===//
 
-std::shared_ptr<VtkDataset> VtkGetCachedDataset(const std::string &path) {
+std::shared_ptr<VtkDataset> VtkGetCachedDataset(const std::string &path, VtkFileSource *source) {
 	static std::mutex cache_lock;
 	static std::map<std::string, std::weak_ptr<VtkDataset>> cache;
 
@@ -471,7 +633,7 @@ std::shared_ptr<VtkDataset> VtkGetCachedDataset(const std::string &path) {
 		}
 		cache.erase(entry);
 	}
-	auto fresh = VtkDataset::Read(path);
+	auto fresh = VtkDataset::Read(path, source);
 	cache[path] = fresh;
 
 	// Opportunistically drop expired entries so the map does not grow without

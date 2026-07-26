@@ -238,6 +238,9 @@ VtkSchemaSet VtkBuildSchemas(const VtkDataset &dataset) {
 		AddFixed(t, "bounds_z_max", LogicalType::DOUBLE);
 		AddFixed(t, "vtk_version", LogicalType::VARCHAR);
 		AddFixed(t, "extension_version", LogicalType::VARCHAR);
+		// Appended, never inserted: design §3 fixes column order so new fields land
+		// at the end and existing positional expectations keep working.
+		AddFixed(t, "source_kind", LogicalType::VARCHAR);
 	}
 
 	return result;

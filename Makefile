@@ -300,3 +300,14 @@ submit-check:
 	./scripts/submit_check.sh
 
 .PHONY: submit-check
+
+## Re-run the SQL suite and invariants with every read routed through the
+## in-memory parse path used for remote files, proving it produces identical
+## results to reading a local path directly.
+test-memory-reads: release
+	@echo "=== sqllogictest via the in-memory parse path ==="
+	DUCK_VTK_FORCE_MEMORY_READ=1 ./build/release/test/unittest --test-dir . "[sql]"
+	@echo "=== invariants via the in-memory parse path ==="
+	DUCK_VTK_FORCE_MEMORY_READ=1 ./scripts/run_invariants.sh
+
+.PHONY: test-memory-reads

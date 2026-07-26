@@ -14,6 +14,7 @@
 #include "duckdb/storage/table_storage_info.hpp"
 #include "duckdb/transaction/transaction.hpp"
 #include "functions/vtk_table_functions.hpp"
+#include "vtk/vtk_file_source.hpp"
 
 namespace duckdb {
 
@@ -293,7 +294,7 @@ void VtkTransactionManager::Checkpoint(ClientContext &, bool) {
 
 namespace {
 
-unique_ptr<Catalog> VtkAttach(optional_ptr<StorageExtensionInfo>, ClientContext &, AttachedDatabase &db,
+unique_ptr<Catalog> VtkAttach(optional_ptr<StorageExtensionInfo>, ClientContext &context, AttachedDatabase &db,
                               const string &, AttachInfo &info, AttachOptions &options) {
 	// Refuse an explicit READ_WRITE rather than silently ignoring it: quietly
 	// accepting a write-mode request that can never be honoured is worse than
@@ -318,7 +319,10 @@ unique_ptr<Catalog> VtkAttach(optional_ptr<StorageExtensionInfo>, ClientContext 
 	// Eager, complete read. Schema discovery for legacy formats requires it, and
 	// failing here means the user sees the error at ATTACH rather than at first
 	// SELECT. Throws IOException on a missing/corrupt file.
-	auto dataset = VtkGetCachedDataset(info.path);
+	// Same VFS routing as the table functions, so
+	// ATTACH 'https://.../mesh.vtu' AS m (TYPE vtk) works with httpfs loaded.
+	auto source = VtkMakeDuckDBFileSource(context);
+	auto dataset = VtkGetCachedDataset(info.path, source.get());
 	return make_uniq<VtkCatalog>(db, info.path, std::move(dataset));
 }
 

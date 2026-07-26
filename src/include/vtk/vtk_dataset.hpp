@@ -1,5 +1,7 @@
 #pragma once
 
+#include "vtk/vtk_file_source.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -52,7 +54,12 @@ public:
 	//! Reads `path` eagerly and completely. Throws IOException with an actionable
 	//! message if the file is missing, not VTK, truncated, or an unsupported
 	//! composite type. Never returns a partially-populated object.
-	static std::shared_ptr<VtkDataset> Read(const std::string &path);
+	//!
+	//! `source` decides how bytes are obtained. For a local path VTK is given the
+	//! filename directly, so only VTK holds the data. For a remote object the bytes
+	//! are fetched through the source and parsed from memory, which costs one extra
+	//! copy for the duration of the parse. Pass nullptr for local-only behaviour.
+	static std::shared_ptr<VtkDataset> Read(const std::string &path, VtkFileSource *source = nullptr);
 
 	~VtkDataset();
 	VtkDataset(const VtkDataset &) = delete;
@@ -94,6 +101,11 @@ public:
 	const std::string &ReaderClass() const {
 		return reader_class;
 	}
+	//! "local", "https", ... — surfaced in vtk_info so a user can see where a
+	//! dataset actually came from.
+	const std::string &SourceKind() const {
+		return source_kind;
+	}
 	const std::string &DatasetClass() const {
 		return dataset_class;
 	}
@@ -129,6 +141,7 @@ private:
 
 	std::string path;
 	std::string reader_class;
+	std::string source_kind = "local";
 	std::string dataset_class;
 	int64_t file_size_bytes = 0;
 	int64_t num_points = 0;
@@ -143,6 +156,9 @@ private:
 //! Process-wide cache so that `vtk_points('f') JOIN vtk_cells('f')` reads the
 //! file once. Entries are weak, so the dataset is released as soon as the last
 //! scan and any attached catalog let go of it.
-std::shared_ptr<VtkDataset> VtkGetCachedDataset(const std::string &path);
+//!
+//! The cache matters more for remote files than local ones: without it, a query
+//! joining two tables of the same URL would download it twice.
+std::shared_ptr<VtkDataset> VtkGetCachedDataset(const std::string &path, VtkFileSource *source = nullptr);
 
 } // namespace duckdb

@@ -87,6 +87,7 @@ set(EXTENSION_SOURCES
 
     # L1 — VTK access
     src/vtk/vtk_error_scope.cpp
+    src/vtk/vtk_file_source.cpp
     src/vtk/vtk_dataset.cpp
 
     # L2 — relational model

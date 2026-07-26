@@ -1,9 +1,13 @@
 #include "functions/vtk_table_functions.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "model/vtk_column_writer.hpp"
 #include "model/vtk_types.hpp"
+#include "vtk/vtk_file_source.hpp"
 
 #include <vtkAbstractArray.h>
 #include <vtkDataArray.h>
@@ -488,6 +492,9 @@ void EmitInfo(const VtkBindData &bind, const vector<column_t> &column_ids, DataC
 			SetVarchar(vec, 0, "unknown");
 #endif
 			break;
+		case 17:
+			SetVarchar(vec, 0, dataset.SourceKind());
+			break;
 		default:
 			FlatVector::GetData<int64_t>(vec)[0] = 0;
 			break;
@@ -587,7 +594,10 @@ unique_ptr<FunctionData> VtkBind(ClientContext &context, TableFunctionBindInput 
 		throw BinderException("duck_vtk: %s requires a file path", VtkTableName(KIND));
 	}
 	const auto path = input.inputs[0].GetValue<string>();
-	auto dataset = VtkGetCachedDataset(path);
+	// Route reads through DuckDB's virtual filesystem so https/s3/gcs/azure work
+	// whenever the user has the corresponding extension loaded.
+	auto source = VtkMakeDuckDBFileSource(context);
+	auto dataset = VtkGetCachedDataset(path, source.get());
 	auto schemas = std::make_shared<VtkSchemaSet>(VtkBuildSchemas(*dataset));
 
 	auto &schema = schemas->Get(KIND);
@@ -622,7 +632,8 @@ unique_ptr<FunctionData> VtkDebugBind(ClientContext &context, TableFunctionBindI
 		throw BinderException("duck_vtk: vtk_debug_dump requires a file path");
 	}
 	auto result = make_uniq<VtkDebugBindData>();
-	auto dataset = VtkGetCachedDataset(input.inputs[0].GetValue<string>());
+	auto source = VtkMakeDuckDBFileSource(context);
+	auto dataset = VtkGetCachedDataset(input.inputs[0].GetValue<string>(), source.get());
 	auto schemas = VtkBuildSchemas(*dataset);
 	result->dump = dataset->DebugDump();
 	// Append the resolved column names, which is where a mapping bug would show.
@@ -654,6 +665,49 @@ void VtkDebugScan(ClientContext &context, TableFunctionInput &input, DataChunk &
 	state.emitted = true;
 }
 
+//===--------------------------------------------------------------------===//
+// Plan serialization
+//===--------------------------------------------------------------------===//
+//
+// NOT optional, and not merely about prepared statements — omitting this caused a
+// silent WRONG-RESULTS bug.
+//
+// DuckDB's common-subplan optimizer builds its signature by SERIALIZING each
+// operator. With no serialize callback, LogicalGet::Serialize falls back to writing
+// the function's input `parameters` (logical_get.cpp:248, "no serialize method:
+// serialize input values and named_parameters for rebinding purposes").
+//
+// On the ATTACH path there ARE no input parameters: VtkTableEntry::GetScanFunction
+// supplies bind data directly, so the path lives only in the bind data. Two scans of
+// different attached VTK databases therefore serialized to identical bytes, the
+// optimizer judged them the same subplan, materialised one as a CTE and pointed both
+// at it. Observed symptom:
+//
+//   ATTACH 'a.vti' AS i; ATTACH 'b.vtp' AS pd;
+//   SELECT (SELECT file_path FROM i.vtk_info), (SELECT file_path FROM pd.vtk_info);
+//   -> 'a.vti' | 'a.vti'          -- both subqueries read the FIRST dataset
+//
+// Writing the path and table kind makes the signature distinguish them. The
+// standalone vtk_*(path) functions were unaffected because their path IS an input
+// parameter, which is why the bug only showed through ATTACH.
+void VtkSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p, const TableFunction &) {
+	auto &bind = bind_data_p->Cast<VtkBindData>();
+	serializer.WriteProperty(100, "path", bind.dataset->Path());
+	serializer.WriteProperty(101, "kind", static_cast<uint8_t>(bind.kind));
+}
+
+unique_ptr<FunctionData> VtkDeserialize(Deserializer &deserializer, TableFunction &) {
+	auto &context = deserializer.Get<ClientContext &>();
+	auto path = deserializer.ReadProperty<string>(100, "path");
+	auto kind = static_cast<VtkTableKind>(deserializer.ReadProperty<uint8_t>(101, "kind"));
+	// Re-reads through the cache, so a plan deserialised in the same session reuses
+	// the dataset rather than fetching it again.
+	auto source = VtkMakeDuckDBFileSource(context);
+	auto dataset = VtkGetCachedDataset(path, source.get());
+	auto schemas = std::make_shared<VtkSchemaSet>(VtkBuildSchemas(*dataset));
+	return VtkMakeBindData(std::move(dataset), std::move(schemas), kind);
+}
+
 TableFunction MakeScan(const char *name, table_function_bind_t bind) {
 	TableFunction fn(name, {LogicalType::VARCHAR}, VtkScan, bind, VtkInitGlobal);
 	// Honoured from the start: with many array columns, converting unrequested
@@ -662,6 +716,10 @@ TableFunction MakeScan(const char *name, table_function_bind_t bind) {
 	fn.filter_pushdown = false;
 	fn.cardinality = VtkCardinality;
 	fn.table_scan_progress = VtkProgress;
+	// See the comment above VtkSerialize: without these, two scans of different
+	// attached VTK databases are wrongly treated as the same subplan.
+	fn.serialize = VtkSerialize;
+	fn.deserialize = VtkDeserialize;
 	return fn;
 }
 
