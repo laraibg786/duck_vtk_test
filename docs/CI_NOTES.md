@@ -182,7 +182,81 @@ rather than `failure`. That is easy to misread as an infrastructure problem. Do 
 while a run you care about is in flight — the community-extensions Linux jobs take
 ~20 minutes and are the only coverage of a custom vcpkg port.
 
-## 12. Node 20 deprecation warning is upstream, not ours
+## 12. The per-OS matrices are fail-fast, and that HIDES information
+
+Each platform group (Windows, macOS, Linux) is one matrix, and it is fail-fast. So a
+failure in a target you do not care about **cancels the sibling you do**:
+
+```
+failure    Windows (windows_amd64_mingw, x64-mingw-static)
+cancelled  Windows (windows_amd64,      x64-windows-static-release)   <- collateral
+```
+
+That happened on both DuckDB lines, twice in a row, and it cost two full cycles: MSVC
+never ran to completion, so its status stayed unknown while looking like it had been
+tried. `cancelled` and `failure` are different words for a reason — read them
+carefully, and if a platform you need keeps getting cancelled, drop the sibling that
+keeps failing rather than re-running and hoping.
+
+## 13. `windows_amd64_mingw` fails on DuckDB's own code
+
+Not on your extension. Under the rtools42 mingw toolchain:
+
+```
+duckdb/tools/sqlite3_api_wrapper/sqlite3_api_wrapper.cpp:1503
+  objidl.h: error: reference to 'byte' is ambiguous
+    candidates are: 'enum class std::byte' / 'typedef unsigned char byte' (rpcndr.h)
+```
+
+`sqlite3_api_wrapper.cpp` includes `<windows.h>` after DuckDB's headers have already
+pulled in `std::byte`. Fixing it means patching DuckDB, so the practical answer is to
+exclude the arch — which is what the ecosystem does. `h5db` (also a heavy C++
+file-format dependency) excludes it, and so does `iceberg`, a **core** extension
+maintained by DuckDB. Check descriptors upstream before assuming a failure is yours:
+
+```bash
+gh api repos/duckdb/community-extensions/contents/extensions/h5db/description.yml   --jq '.content' | base64 -d | grep excluded_platforms
+```
+
+## 14. `requires_toolchains` does NOT control vcpkg
+
+Some descriptors say `requires_toolchains: "vcpkg;python3"`, which suggests vcpkg is
+opt-in. It is not. The field maps to the reusable workflow's `extra_toolchains`, which
+is only forwarded to the Linux Docker image build and to rust log collection. vcpkg is
+provisioned unconditionally, in `extension-ci-tools/docker/<arch>/Dockerfile`:
+
+```dockerfile
+ARG vcpkg_url
+ARG vcpkg_commit
+RUN mkdir /vcpkg && ... git checkout $vcpkg_commit && ./bootstrap-vcpkg.sh
+ENV VCPKG_TOOLCHAIN_PATH=/vcpkg/scripts/buildsystems/vcpkg.cmake
+```
+
+So a port-only extension needs no `requires_toolchains` at all. Declaring `vcpkg`
+there is harmless but redundant; declare only genuinely extra toolchains (python3,
+rust).
+
+## 15. Distro-packaged VTK is a trap, and it fails SILENTLY
+
+Not strictly a CI note, but it was CI that caught it, and only because the matrix
+happened to include a job building against the distro package.
+
+Ubuntu 24.04's `libvtk9-dev` (9.1.0) cannot parse XML files containing an
+`<AppendedData>` section — which is what most real VTK writers emit. It reports
+
+```
+vtkXMLDataParser: Error parsing XML in stream ...: junk after document element
+vtkXMLReader:     Error parsing input file.  ReadXMLInformation aborting.
+```
+
+and then **leaves `GetErrorCode()` at Success and hands back a valid but EMPTY
+dataset**. A mesh of 2903 points reads as 0 points with no error anywhere.
+
+Two lessons. Never trust `GetErrorCode()` on a VTK reader — capture the output window
+instead. And a job that builds against a distro package to prove "we are not tied to
+the newest version" can pass for months while proving the opposite; ours did.
+
+## 16. Node 20 deprecation warning is upstream, not ours
 
 Every run annotates:
 
