@@ -34,13 +34,17 @@ ALTER TABLE m.points RENAME TO renamed;
 ----
 read-only
 
-# DuckDB's binder rejects this before it reaches VtkSchemaEntry::CreateIndex,
-# so the message is DuckDB's rather than ours. What matters for design §7 is that
-# it is refused cleanly and does not crash — either message is acceptable.
+# The two supported DuckDB lines refuse this at different depths, so the assertion
+# is on the substring common to both messages:
+#   1.4.5 -> reaches VtkCatalog::BindCreateIndex: "... an index on a read-only VTK database"
+#   1.5.4 -> rejected earlier by the binder:      "... an index on a base table"
+# Before BindCreateIndex was overridden, 1.4.5 CRASHED here with
+# "INTERNAL Error: Attempting to dereference an optional pointer that is not set".
+# Design §7 requires a clean refusal, not a particular message.
 statement error
 CREATE INDEX idx ON m.points(point_id);
 ----
-base table
+index on a
 
 statement error
 CREATE SEQUENCE m.seq;

@@ -62,7 +62,29 @@ endif
 # clean, format, update, ...) come from extension-ci-tools.
 # Note: that makefile skips tests when LINUX_CI_IN_DOCKER is explicitly 0, so
 # leave it unset locally.
+# Drop a stale CMake cache when the DuckDB source tree changes.
+#
+# Switching versions (e.g. `make release DUCKDB_SRCDIR=/tmp/duckdb-1.4.5/`) otherwise
+# fails with:
+#   CMake Error: The source ".../duckdb/CMakeLists.txt" does not match the source
+#   "/tmp/duckdb-1.4.5/CMakeLists.txt" used to generate cache.
+# which is an unhelpful wall to hit when testing LTS compatibility. Detect the
+# mismatch and re-configure automatically instead of requiring `rm -rf build/`.
+# Recursively expanded (=, not :=) on purpose: DUCKDB_SRCDIR is set by the
+# extension-ci-tools makefile, which is included BELOW this point. With := it
+# would evaluate to empty here and the guard would clear the cache on every build.
+DUCKDB_SRC_ABS = $(abspath $(patsubst "%",%,$(DUCKDB_SRCDIR)))
+define _duck_vtk_guard_cache
+	@for d in build/release build/debug build/relassert build/reldebug; do 		if [ -f "$$d/CMakeCache.txt" ]; then 			cached=$$(grep -m1 '^CMAKE_HOME_DIRECTORY:INTERNAL=' "$$d/CMakeCache.txt" | cut -d= -f2-); 			if [ -n "$$cached" ] && [ "$$cached" != "$(DUCKDB_SRC_ABS)" ]; then 				echo "duck_vtk: DuckDB source changed ($$cached -> $(DUCKDB_SRC_ABS)); clearing $$d"; 				rm -rf "$$d"; 			fi; 		fi; 	done
+endef
+
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
+
+# Run the guard before any configure-and-build target.
+release debug relassert reldebug: | guard-duckdb-src
+guard-duckdb-src:
+	$(_duck_vtk_guard_cache)
+.PHONY: guard-duckdb-src
 
 # ---------------------------------------------------------------------------
 # duck_vtk-specific convenience targets

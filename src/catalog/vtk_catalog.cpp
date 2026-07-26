@@ -188,6 +188,17 @@ optional_idx VtkCatalog::GetCatalogVersion(ClientContext &) {
 	return optional_idx(1);
 }
 
+unique_ptr<LogicalOperator> VtkCatalog::BindCreateIndex(Binder &, CreateStatement &, TableCatalogEntry &,
+                                                        unique_ptr<LogicalOperator>) {
+	// See the header for why this override exists: DuckDB 1.4.5 otherwise reaches a
+	// null optional_ptr dereference here instead of reporting a refusal.
+	// Wording note: DuckDB 1.5's binder rejects CREATE INDEX before reaching this
+	// override, with "can only create an index on a base table". Phrasing ours as
+	// "... an index on a read-only VTK database" gives the two messages the common
+	// substring "index on a", so one test assertion covers both version lines.
+	throw BinderException("duck_vtk: cannot create an index on a read-only VTK database");
+}
+
 DatabaseSize VtkCatalog::GetDatabaseSize(ClientContext &) {
 	DatabaseSize size;
 	// Honest answer: the on-disk size of the file we read. The block-based fields

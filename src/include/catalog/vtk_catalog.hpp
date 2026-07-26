@@ -96,6 +96,19 @@ public:
 	PhysicalOperator &PlanUpdate(ClientContext &context, PhysicalPlanGenerator &planner, LogicalUpdate &op,
 	                             PhysicalOperator &plan) override;
 
+	//! Intercept index planning.
+	//!
+	//! Without this, DuckDB 1.4.5 crashes with
+	//!   INTERNAL Error: Attempting to dereference an optional pointer that is not set
+	//! on `CREATE INDEX ... ON <attached>.points`, because the 1.4 planner reaches
+	//! into table storage that a non-DuckTable catalog entry does not have. DuckDB
+	//! 1.5 happens to reject it earlier in the binder, which is why the v1.5.4-only
+	//! test suite did not catch this. Design §7 requires a clean refusal on every
+	//! write path, so intercept here rather than relying on the host version's
+	//! binder to be defensive.
+	unique_ptr<LogicalOperator> BindCreateIndex(Binder &binder, CreateStatement &stmt, TableCatalogEntry &table,
+	                                            unique_ptr<LogicalOperator> plan) override;
+
 	DatabaseSize GetDatabaseSize(ClientContext &context) override;
 	bool InMemory() override;
 	string GetDBPath() override;
