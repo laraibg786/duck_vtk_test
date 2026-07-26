@@ -91,12 +91,13 @@ jobs:
           path: ~/.local/vtk-9.6.2
           key: vtk-9.6.2-${{ runner.os }}-${{ hashFiles('scripts/build_minimal_vtk.sh') }}
 
-      - name: Build minimal VTK
-        if: steps.vtk-cache.outputs.cache-hit != 'true'
-        run: ./scripts/build_minimal_vtk.sh
-
-      - name: Point the build at it
-        run: echo "VTK_DIR=$HOME/.local/vtk-9.6.2/lib/cmake/vtk-9.6" >> $GITHUB_ENV
+      # Run unconditionally, cache hit or not: the script is idempotent and returns
+      # immediately when VTK is already installed. Its last stdout line is the cmake
+      # config directory in both cases, so take VTK_DIR from there rather than
+      # duplicating the version and path here — a VTK bump would otherwise need edits
+      # in two places, and the stale one would only show up as a configure failure.
+      - name: Build minimal VTK (no-op on cache hit) and export VTK_DIR
+        run: echo "VTK_DIR=$(./scripts/build_minimal_vtk.sh | tail -1)" >> $GITHUB_ENV
 
       - uses: actions/cache@v4
         with:
