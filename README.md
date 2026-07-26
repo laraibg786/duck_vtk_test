@@ -47,7 +47,7 @@ needs them. They exist because the DuckDB community-extensions CI requires a
 | OS | Linux x86_64 (macOS should work; not yet tested) |
 | Compiler | GCC ≥ 11 or Clang ≥ 14, C++17. Verified with GCC 14.2 |
 | Build tools | CMake ≥ 3.16, Ninja (optional but much faster), ccache (optional, big win) |
-| VTK | ≥ 9.0. `make configure` builds a minimal 9.6.2 if none is found |
+| VTK | ≥ **9.1**. `make configure` builds a minimal 9.6.2 if none is found. 9.1 is the floor because that is the oldest version CI actually builds against (Ubuntu 24.04 ships it) |
 | DuckDB | Built from the pinned submodule. **Verified against 1.5.4 and 1.4.5 (LTS)** — full suite green on both |
 
 Override the compiler the normal CMake way:

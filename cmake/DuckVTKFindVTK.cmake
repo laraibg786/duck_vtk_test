@@ -11,6 +11,16 @@
 #   VTK_LIBRARIES         — the module targets to link and to pass to autoinit
 #   DUCK_VTK_LIBRARY_DIR  — directory holding the VTK shared libraries, for RPATH
 
+# Minimum VTK.
+#
+# 9.1 rather than 9.0 because 9.1 is the oldest version actually validated: Ubuntu
+# 24.04 ships it and CI builds against it. The binding constraint is
+# vtkXMLReader's in-memory API — 9.1/9.3 expose only
+# SetInputString(const std::string &), while SetInputArray arrived in 9.6 — so
+# src/vtk/vtk_dataset.cpp deliberately restricts itself to the 9.1 surface.
+# Claiming 9.0 would be asserting something untested.
+set(DUCK_VTK_MIN_VERSION 9.1)
+
 # ---------------------------------------------------------------------------
 # Component set
 # ---------------------------------------------------------------------------
@@ -93,11 +103,11 @@ if(NOT DUCK_VTK_VIA_VCPKG AND (NOT DEFINED VTK_DIR OR VTK_DIR STREQUAL ""))
   endforeach()
 endif()
 
-find_package(VTK 9.0 QUIET COMPONENTS ${DUCK_VTK_REQUIRED_COMPONENTS})
+find_package(VTK ${DUCK_VTK_MIN_VERSION} QUIET COMPONENTS ${DUCK_VTK_REQUIRED_COMPONENTS})
 
 if(NOT VTK_FOUND)
   message(FATAL_ERROR
-    "duck_vtk: could not find VTK >= 9.0 with the required components.\n"
+    "duck_vtk: could not find VTK >= ${DUCK_VTK_MIN_VERSION} with the required components.\n"
     "  Required: ${DUCK_VTK_REQUIRED_COMPONENTS}\n"
     "  Tried VTK_DIR='${VTK_DIR}'\n"
     "\n"
@@ -119,7 +129,7 @@ endif()
 # component in the main call would abort even though these are non-essential.
 set(DUCK_VTK_ENABLED_OPTIONAL "")
 foreach(_comp ${DUCK_VTK_OPTIONAL_COMPONENTS})
-  find_package(VTK 9.0 QUIET COMPONENTS ${_comp})
+  find_package(VTK ${DUCK_VTK_MIN_VERSION} QUIET COMPONENTS ${_comp})
   if(TARGET VTK::${_comp})
     list(APPEND DUCK_VTK_ENABLED_OPTIONAL ${_comp})
   endif()
@@ -127,7 +137,7 @@ endforeach()
 
 # Re-run the find with the full resolved set so VTK_LIBRARIES contains
 # everything we intend to link and hand to vtk_module_autoinit.
-find_package(VTK 9.0 REQUIRED
+find_package(VTK ${DUCK_VTK_MIN_VERSION} REQUIRED
   COMPONENTS ${DUCK_VTK_REQUIRED_COMPONENTS} ${DUCK_VTK_ENABLED_OPTIONAL})
 
 # ---------------------------------------------------------------------------

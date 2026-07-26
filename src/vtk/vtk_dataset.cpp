@@ -34,6 +34,7 @@
 
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <mutex>
 
@@ -252,7 +253,25 @@ vtkSmartPointer<vtkDataObject> ReadDataObjectFromMemory(const std::string &bytes
 			return nullptr;
 		}
 		reader->SetReadFromInputString(1);
-		reader->SetInputArray(buffer);
+		// SetInputString(const std::string &), NOT SetInputArray.
+		//
+		// vtkXMLReader only gained SetInputArray in VTK 9.6; 9.1 and 9.3 expose just
+		// the std::string overload. Ubuntu 24.04 ships 9.1, so using SetInputArray
+		// here failed to compile there — caught by CI, invisible when building
+		// against 9.6 locally. The std::string form is binary-safe in every version
+		// (9.1/9.3 assign straight to a std::string member; 9.6 routes through
+		// SetBinaryInputString), so embedded NULs in base64/appended payloads survive.
+		//
+		// The cost is one extra copy of the buffer for XML, which the legacy path
+		// avoids because vtkDataReader::SetInputArray HAS existed since 9.1.
+		if (bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+			// VTK 9.6's std::string overload casts the length to int internally, so a
+			// larger buffer would be silently truncated. Refuse instead.
+			throw IOException("duck_vtk: XML dataset is %llu bytes, above the 2 GiB limit for "
+			                  "parsing XML from memory. Copy it to local storage first.",
+			                  (unsigned long long)bytes.size());
+		}
+		reader->SetInputString(bytes);
 		reader->Update();
 		reader_class = std::string(reader->GetClassName()) + " (in-memory)";
 		auto *out = reader->GetOutputAsDataSet();
