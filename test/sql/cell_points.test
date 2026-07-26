@@ -1,0 +1,53 @@
+# name: test/sql/cell_points.test
+# description: cell_points is exactly the ordered flattening of cells.point_ids
+# group: [vtk]
+
+require vtk
+
+statement ok
+ATTACH 'test/data/legacy/VTKCellTypes.vtk' AS m (TYPE vtk);
+
+query I
+SELECT count(*) FROM m.cell_points;
+----
+49
+
+# Set-equal to the flattening, INCLUDING vertex_index ordering.
+query I
+SELECT count(*) FROM (
+  SELECT cell_id, vertex_index, point_id FROM m.cell_points
+  EXCEPT
+  SELECT cell_id, generate_subscripts(point_ids, 1) - 1, unnest(point_ids) FROM m.cells
+);
+----
+0
+
+# No dangling references.
+query I
+SELECT count(*) FROM m.cell_points cp
+WHERE cp.point_id NOT IN (SELECT point_id FROM m.points);
+----
+0
+
+# The everyday CAE query: cell centroids via the join table.
+query IIII
+SELECT cp.cell_id, round(avg(p.x),6), round(avg(p.y),6), round(avg(p.z),6)
+FROM m.cell_points cp JOIN m.points p USING (point_id)
+GROUP BY cp.cell_id ORDER BY cp.cell_id LIMIT 3;
+----
+0	0.5	0.5	0.5
+1	1.5	0.5	0.5
+2	0.25	0.75	1.25
+
+# Vertex order is preserved, not sorted.
+query II
+SELECT vertex_index, point_id FROM m.cell_points WHERE cell_id = 0 ORDER BY vertex_index;
+----
+0	0
+1	1
+2	4
+3	3
+4	6
+5	7
+6	10
+7	9

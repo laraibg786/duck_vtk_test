@@ -37,6 +37,7 @@ include_directories(src/include)
 # Kept in a separate module so the discovery/diagnostic logic stays readable and
 # so alternate VTK sources (apt libvtk9-dev, a source build) can be selected by
 # passing -DVTK_DIR=... without editing this file.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/DuckVTKOptimize.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/DuckVTKFindVTK.cmake)
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,7 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
 foreach(_duck_vtk_target ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
   target_link_libraries(${_duck_vtk_target} ${VTK_LIBRARIES})
+  duck_vtk_apply_optimisations(${_duck_vtk_target})
 
   # MANDATORY, and the single most common VTK integration mistake.
   #

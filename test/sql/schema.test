@@ -1,0 +1,56 @@
+# name: test/sql/schema.test
+# description: exact column names, order and types — the normative contract
+# group: [vtk]
+
+require vtk
+
+statement ok
+ATTACH 'test/data/legacy/VTKCellTypes.vtk' AS m (TYPE vtk);
+
+# points: three geometry columns first, then one column per point array in VTK's
+# own array order. x/y/z are ALWAYS DOUBLE even though this file stores float.
+query II
+SELECT column_name, data_type FROM information_schema.columns
+WHERE table_catalog='m' AND table_name='points' ORDER BY ordinal_position;
+----
+point_id	BIGINT
+x	DOUBLE
+y	DOUBLE
+z	DOUBLE
+scalars	FLOAT
+vectors	FLOAT[]
+
+# cells: five fixed columns then the cell arrays.
+query II
+SELECT column_name, data_type FROM information_schema.columns
+WHERE table_catalog='m' AND table_name='cells' ORDER BY ordinal_position;
+----
+cell_id	BIGINT
+cell_type	INTEGER
+cell_type_name	VARCHAR
+num_points	INTEGER
+point_ids	BIGINT[]
+scalars	FLOAT
+
+query II
+SELECT column_name, data_type FROM information_schema.columns
+WHERE table_catalog='m' AND table_name='cell_points' ORDER BY ordinal_position;
+----
+cell_id	BIGINT
+vertex_index	INTEGER
+point_id	BIGINT
+
+# A 1-component array must be a scalar column, never a 1-element list.
+query I
+SELECT data_type FROM information_schema.columns
+WHERE table_catalog='m' AND table_name='points' AND column_name='scalars';
+----
+FLOAT
+
+# The same array name in POINT and CELL association is legal and must NOT be
+# deduplicated: they land in different tables.
+query II
+SELECT association, column_name FROM m.vtk_arrays WHERE name='scalars' ORDER BY association;
+----
+CELL	scalars
+POINT	scalars

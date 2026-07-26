@@ -1,0 +1,40 @@
+# name: test/sql/attach_errors.test
+# description: every bad input fails with an actionable message, never a crash
+# group: [vtk]
+
+require vtk
+
+statement error
+ATTACH 'test/data/does_not_exist.vtk' AS m (TYPE vtk);
+----
+no such file
+
+# A truncated file must NOT be mistaken for valid or empty data. VTK gives no
+# error code for this — detection relies on capturing its output window.
+statement error
+ATTACH 'test/data/synthetic/truncated.vtk' AS m (TYPE vtk);
+----
+corrupt or truncated
+
+# Dispatch is on CONTENT, never on the file extension.
+statement error
+ATTACH 'test/data/synthetic/not_really.vtk' AS m (TYPE vtk);
+----
+duck_vtk: cannot read
+
+statement error
+ATTACH 'test/data/synthetic/bad_type.vtu' AS m (TYPE vtk);
+----
+duck_vtk: cannot read
+
+# Unknown options are rejected so adding real ones later is not a silent change.
+statement error
+ATTACH 'test/data/legacy/uGridEx.vtk' AS m (TYPE vtk, bogus_option 'x');
+----
+unknown ATTACH option
+
+# A write-mode request that cannot be honoured is refused rather than ignored.
+statement error
+ATTACH 'test/data/legacy/uGridEx.vtk' AS m (TYPE vtk, READ_WRITE);
+----
+read-only

@@ -128,3 +128,34 @@ check-pin:
 	  *) echo "MISMATCH: CLI is '$$cli' but DUCKDB_VERSION_TAG is $(DUCKDB_VERSION_TAG)."; \
 	     echo "         The built extension will refuse to load into this CLI."; exit 1 ;; \
 	esac
+
+# ---------------------------------------------------------------------------
+# One-command setup and install
+# ---------------------------------------------------------------------------
+
+## Full first-time setup: submodules at the pinned commits, a VTK to build
+## against, and the Python oracle venv. Idempotent — safe to re-run.
+## This is the ONLY command a new contributor needs before `make release`.
+configure:
+	./scripts/configure.sh
+
+## Install the built extension where DuckDB looks for local extensions, so
+## `LOAD vtk;` works with no path. Prints the exact commands to use it.
+install: release
+	./scripts/install_extension.sh
+
+## Remove the installed extension.
+uninstall:
+	./scripts/install_extension.sh --uninstall
+
+## Everything: setup, build, and the full test suite.
+all-checks: configure release check
+
+.PHONY: configure install uninstall all-checks
+
+## Smoke test through the DuckDB Python client (needs `make install` first).
+## Uses an ad-hoc uvx environment, so nothing is installed system-wide.
+python-smoke: install
+	uvx --with duckdb==$(patsubst v%,%,$(DUCKDB_VERSION_TAG)) python scripts/python_smoke.py
+
+.PHONY: python-smoke

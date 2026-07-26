@@ -1,0 +1,53 @@
+# name: test/sql/projection.test
+# description: projection pushdown. An off-by-one in column_ids returns a
+#              DIFFERENT column's data with no error, which no aggregate check
+#              would notice — hence explicit per-column assertions.
+# group: [vtk]
+
+require vtk
+
+statement ok
+ATTACH 'test/data/synthetic/awkward_names.vtk' AS m (TYPE vtk);
+
+# Each column selected alone must yield its own values.
+query I
+SELECT "Pressure_Pa" FROM m.points ORDER BY point_id;
+----
+101325.0
+101326.0
+101327.0
+
+query I
+SELECT "x_1" FROM m.points ORDER BY point_id;
+----
+7.0
+8.0
+9.0
+
+query I
+SELECT "temperature_1" FROM m.points ORDER BY point_id;
+----
+4.0
+5.0
+6.0
+
+# Out-of-order and repeated projections.
+query III
+SELECT "temperature_1", "Pressure_Pa", z FROM m.points ORDER BY point_id LIMIT 1;
+----
+4.0	101325.0	0.0
+
+statement ok
+ATTACH 'test/data/legacy/uGridEx.vtk' AS u (TYPE vtk);
+
+# A LIST column selected on its own, and reversed relative to schema order.
+query II
+SELECT point_ids, cell_type_name FROM u.cells ORDER BY cell_id LIMIT 2;
+----
+[0, 1, 4, 3, 6, 7, 10, 9]	VTK_HEXAHEDRON
+[1, 2, 5, 4, 7, 8, 11, 10]	VTK_HEXAHEDRON
+
+query I
+SELECT sum(num_points) FROM u.cells;
+----
+51

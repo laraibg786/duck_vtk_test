@@ -1,0 +1,60 @@
+# name: test/sql/attach_basic.test
+# description: ATTACH surface — TYPE spelling, schema resolution, DETACH
+# group: [vtk]
+
+require vtk
+
+statement ok
+ATTACH 'test/data/legacy/uGridEx.vtk' AS m (TYPE vtk);
+
+# Unqualified and schema-qualified must both resolve.
+query I
+SELECT count(*) FROM m.points;
+----
+27
+
+query I
+SELECT count(*) FROM m.main.points;
+----
+27
+
+statement ok
+DETACH m;
+
+# TYPE is matched case-insensitively.
+statement ok
+ATTACH 'test/data/legacy/uGridEx.vtk' AS u (TYPE VTK);
+
+query I
+SELECT count(*) FROM u.cells;
+----
+12
+
+statement ok
+DETACH u;
+
+# READ_ONLY is accepted and is a no-op.
+statement ok
+ATTACH 'test/data/legacy/uGridEx.vtk' AS r (TYPE vtk, READ_ONLY);
+
+query I
+SELECT num_points FROM r.vtk_info;
+----
+27
+
+statement ok
+DETACH r;
+
+# All six tables exist.
+statement ok
+ATTACH 'test/data/legacy/uGridEx.vtk' AS m2 (TYPE vtk);
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'm2';
+----
+6
+
+query I
+SELECT string_agg(table_name, ',' ORDER BY table_name) FROM duckdb_tables() WHERE database_name = 'm2';
+----
+cell_points,cells,field_data,points,vtk_arrays,vtk_info

@@ -1,0 +1,69 @@
+# name: test/sql/read_only.test
+# description: every write path refuses cleanly. An unimplemented pure virtual
+#              that CRASHES instead of throwing is the most likely serious bug in
+#              the catalog layer, so each override gets its own assertion.
+# group: [vtk]
+
+require vtk
+
+statement ok
+ATTACH 'test/data/legacy/uGridEx.vtk' AS m (TYPE vtk);
+
+statement error
+CREATE TABLE m.foo(i INTEGER);
+----
+read-only
+
+statement error
+CREATE VIEW m.v AS SELECT 1;
+----
+read-only
+
+statement error
+CREATE SCHEMA m.other;
+----
+read-only
+
+statement error
+DROP TABLE m.points;
+----
+read-only
+
+statement error
+ALTER TABLE m.points RENAME TO renamed;
+----
+read-only
+
+# DuckDB's binder rejects this before it reaches VtkSchemaEntry::CreateIndex,
+# so the message is DuckDB's rather than ours. What matters for design §7 is that
+# it is refused cleanly and does not crash — either message is acceptable.
+statement error
+CREATE INDEX idx ON m.points(point_id);
+----
+base table
+
+statement error
+CREATE SEQUENCE m.seq;
+----
+read-only
+
+statement error
+CREATE TYPE m.t AS ENUM ('a');
+----
+read-only
+
+statement error
+INSERT INTO m.points VALUES (99, 0, 0, 0, 0, [0,0,0]);
+----
+read-only VTK database
+
+statement error
+CREATE TABLE m.ctas AS SELECT * FROM m.points;
+----
+read-only
+
+# Reads must still work after all those refusals — no state was corrupted.
+query I
+SELECT count(*) FROM m.points;
+----
+27

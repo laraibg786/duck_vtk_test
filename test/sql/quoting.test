@@ -1,0 +1,32 @@
+# name: test/sql/quoting.test
+# description: design §6 — array names are used verbatim, with collisions resolved
+# group: [vtk]
+
+require vtk
+
+statement ok
+ATTACH 'test/data/synthetic/awkward_names.vtk' AS m (TYPE vtk);
+
+# Four arrays. All ReadAll* flags must be on, or the legacy reader silently
+# returns only the first SCALARS array.
+query I
+SELECT count(*) FROM m.vtk_arrays;
+----
+4
+
+# `x` collides with the reserved coordinate column -> x_1.
+# `temperature` is case-insensitively ambiguous with `Temperature` -> temperature_1.
+# Original names are preserved in `name`; the usable name is in `column_name`.
+query II
+SELECT name, column_name FROM m.vtk_arrays ORDER BY array_index;
+----
+Pressure_Pa	Pressure_Pa
+x	x_1
+Temperature	Temperature
+temperature	temperature_1
+
+# Every mangled column is actually addressable, and x still means the coordinate.
+query IIIII
+SELECT x, "x_1", "Pressure_Pa", "Temperature", "temperature_1" FROM m.points ORDER BY point_id LIMIT 1;
+----
+0.0	7.0	101325.0	1.0	4.0

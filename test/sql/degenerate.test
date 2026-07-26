@@ -1,0 +1,84 @@
+# name: test/sql/degenerate.test
+# description: design §8 — the cases a real CAE file hits first
+# group: [vtk]
+
+require vtk
+
+# Empty dataset: all six tables exist, zero rows, NOT an error. Bounds are NULL
+# rather than VTK's inverted ±VTK_DOUBLE_MAX sentinel box.
+statement ok
+ATTACH 'test/data/synthetic/empty.vtk' AS e (TYPE vtk);
+
+query IIII
+SELECT num_points, num_cells, bounds_x_min IS NULL, bounds_z_max IS NULL FROM e.vtk_info;
+----
+0	0	true	true
+
+query IIII
+SELECT (SELECT count(*) FROM e.points), (SELECT count(*) FROM e.cells),
+       (SELECT count(*) FROM e.cell_points), (SELECT count(*) FROM e.vtk_arrays);
+----
+0	0	0	0
+
+# Points but no cells (a point cloud).
+statement ok
+ATTACH 'test/data/synthetic/points_only.vtk' AS p (TYPE vtk);
+
+query III
+SELECT (SELECT count(*) FROM p.points), (SELECT count(*) FROM p.cells),
+       (SELECT count(*) FROM p.cell_points);
+----
+4	0	0
+
+query I
+SELECT temperature FROM p.points ORDER BY point_id;
+----
+10.5
+20.5
+30.5
+40.5
+
+# Cells but no cell data: `cells` has only its five reserved columns.
+statement ok
+ATTACH 'test/data/legacy/uGridEx.vtk' AS n (TYPE vtk);
+
+query I
+SELECT count(*) FROM information_schema.columns WHERE table_catalog='n' AND table_name='cells';
+----
+5
+
+# NaN and ±Inf pass through as VALUES, not NULLs.
+statement ok
+ATTACH 'test/data/synthetic/nan_inf.vtu' AS f (TYPE vtk);
+
+# NOTE: booleans render as 0/1 under `query I`. Also NOT asserted here: `value > 0`
+# for NaN. DuckDB's total-order semantics place NaN ABOVE all numbers, so NaN > 0
+# is TRUE — that is DuckDB behaviour, nothing to do with this extension, and
+# asserting it here would only pin someone else's semantics.
+query IIII
+SELECT point_id, isnan(value), isinf(value), value::VARCHAR FROM f.points ORDER BY point_id;
+----
+0	0	0	1.5
+1	1	0	nan
+2	0	1	inf
+3	0	1	-inf
+
+query I
+SELECT count(*) FROM f.points WHERE value IS NULL;
+----
+0
+
+# A legacy field-only (DATASET FIELD) file: no geometry, arrays via field_data.
+statement ok
+ATTACH 'test/data/legacy/financial.vtk' AS fin (TYPE vtk);
+
+query III
+SELECT num_points, num_cells, num_field_arrays FROM fin.vtk_info;
+----
+0	0	7
+
+# Includes a vtkStringArray, which is only reachable via GetAbstractArray.
+query II
+SELECT name, sql_type FROM fin.vtk_arrays WHERE sql_type = 'VARCHAR';
+----
+Some Text	VARCHAR

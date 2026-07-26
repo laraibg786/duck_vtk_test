@@ -1,0 +1,23 @@
+# name: test/sql/load.test
+# description: extension loads and VTK is callable from inside the module
+# group: [vtk]
+
+# Before loading, the function must not exist.
+statement error
+SELECT vtk_version();
+----
+Catalog Error
+
+require vtk
+
+# A real VTK version string proves the library is linked AND callable through a
+# dlopen'd module, which is strictly more than "it compiled".
+query I
+SELECT vtk_version() LIKE '9.%';
+----
+true
+
+query I
+SELECT vtk_build_info() LIKE 'VTK 9.%sizeof(vtkIdType)=%';
+----
+true
