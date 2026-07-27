@@ -215,6 +215,62 @@ should say *why*, which it currently does not.
 
 ---
 
+## 5b. Remote access, including SFTP
+
+Reading is already scheme-driven: no URL scheme → hand the path to VTK; any scheme →
+fetch through DuckDB's VFS and parse from memory. So **every filesystem extension
+works with no code here**, present or future. `test/sql/remote_schemes.test` pins it.
+
+That was not true before 2026-07-27. The routing used `FileSystem::IsRemoteFile()`,
+which matches `EXTENSION_FILE_PREFIXES` — a *hardcoded* table in DuckDB core listing
+only the `httpfs` and `azure` schemes. Anything else (`sshfs://`, `sftp://`, `gdfs://`,
+`file://`) was classified **local** and its URL handed to VTK's `ifstream`, which
+cannot open a URL. Three defects came out of that one line:
+
+| Was | Now |
+|---|---|
+| `sshfs://`, `sftp://`, `file://` treated as local paths → VTK fails on a file DuckDB could open | routed through the VFS |
+| `vtk_info.source_kind` declared and surfaced, but **never assigned** — always `'local'`, including for `https://` | reports the scheme |
+| `file_size_bytes` from `std::filesystem::file_size()`, which cannot stat a URL → silently **0** for every remote read | size of the bytes received |
+
+### SFTP specifically
+
+DuckDB core has no SFTP filesystem. Two community extensions provide one, and as of
+DuckDB v1.5.5 on `linux_amd64` **neither works** — measured 2026-07-27:
+
+- **`sshfs`** (`sshfs://`) installs, loads, and *is* dispatched by the VFS, but every
+  handshake fails. Its bundled `libssh2_1.11.1_DEV` sends a `SSH2_MSG_GLOBAL_REQUEST`
+  (packet type 80) before key exchange completes, and `sshd` answers
+  `SSH2_MSG_DISCONNECT: protocol error: rcvd type 80`. Reproduced against OpenSSH
+  **9.2** (Debian bookworm) and **10.3**, with legacy KEX/cipher/MAC/host-key
+  algorithms explicitly re-enabled on the server, so it is not a configuration or
+  algorithm-negotiation problem. A client-side defect, upstream of this project.
+- **`cloudfs`** (`sftp://`) publishes no binary for `v1.5.5/linux_amd64` (HTTP 404).
+
+Nothing here is blocked on us: both schemes already route correctly. The honest
+statement for users is "SFTP works as soon as a working SFTP filesystem exists for
+your DuckDB version", with HTTP/S3 (verified end to end) or `scp`-then-read as the
+present-day answer.
+
+**If SFTP becomes a requirement rather than a nice-to-have**, the options in order of
+cost are: (1) wait for / report the `sshfs` libssh2 bug — cheapest, no code here;
+(2) test `cloudfs` on a platform where it *is* published, to see whether it is a
+viable recommendation at all; (3) implement an SFTP `FileSystem` in this extension —
+**rejected**: it would make a mesh reader responsible for SSH transport and key
+handling, it duplicates what a filesystem extension is *for*, and it would add
+libssh2 to `vcpkg.json` for every platform. Effort **S** for (1)–(2), **L** and a
+scope violation for (3).
+
+Two properties of any remote read worth keeping in mind before building on them:
+
+- **The whole object is buffered, then parsed** — roughly 2× file size in RAM during
+  parse. Refused above 64 GiB (`MAX_IN_MEMORY_BYTES`).
+- **No range requests.** VTK needs the whole file, so `LIMIT 1` still downloads it
+  all. Lazy schema discovery (§5) would *not* fix this for remote sources, since
+  `UpdateInformation()` also needs the bytes — worth remembering when scoping §5.
+
+---
+
 ## 6. Suggested order
 
 Sequenced so each step unblocks the next and each lands something usable:

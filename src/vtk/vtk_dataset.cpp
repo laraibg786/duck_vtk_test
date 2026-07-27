@@ -422,9 +422,19 @@ std::shared_ptr<VtkDataset> VtkDataset::Read(const std::string &path, VtkFileSou
 	const bool via_memory = !local || VtkForceMemoryReads();
 
 	if (!source->Exists(path)) {
-		throw IOException("duck_vtk: cannot read '%s': no such file%s", path,
-		                  local ? "" : " (or it is unreachable — is the relevant filesystem "
-		                               "extension loaded, e.g. INSTALL httpfs; LOAD httpfs;)");
+		if (local) {
+			throw IOException("duck_vtk: cannot read '%s': no such file", path);
+		}
+		// Name the actual scheme. The previous message suggested httpfs for every
+		// remote path, which is wrong for ssh:// (sshfs), sftp:// (cloudfs) and any
+		// other filesystem extension — and misleading enough to send someone
+		// installing the wrong extension.
+		const auto scheme = source->Describe(path);
+		throw IOException("duck_vtk: cannot read '%s': no such file, or no loaded DuckDB filesystem "
+		                  "handles the '%s://' scheme, or the object is unreachable. Load the "
+		                  "extension that provides '%s://' first (httpfs for http/https/s3/gcs, "
+		                  "azure for azure/abfss, sshfs for ssh, cloudfs for sftp).",
+		                  path, scheme, scheme);
 	}
 
 	// The scope must be live before any probing, because probe failures write to
@@ -502,7 +512,13 @@ std::shared_ptr<VtkDataset> VtkDataset::Read(const std::string &path, VtkFileSou
 	result->path = path;
 	result->reader_class = reader_class;
 	result->dataset_class = object->GetClassName();
-	result->file_size_bytes = FileSize(path);
+	// source_kind was declared and surfaced in vtk_info from the start, but nothing
+	// ever assigned it — so it read "local" for every file, including remote ones.
+	// VtkFileSource::Describe() exists precisely to supply it.
+	result->source_kind = source->Describe(path);
+	// FileSize() is std::filesystem, which returns 0 for a URL. For anything read
+	// through the VFS the authoritative size is what we actually received.
+	result->file_size_bytes = via_memory ? static_cast<int64_t>(bytes.size()) : FileSize(path);
 	result->Initialise();
 	result->CollectArrays();
 	return result;

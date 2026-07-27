@@ -1,0 +1,109 @@
+# name: test/sql/remote_schemes.test
+# description: URL schemes are routed through DuckDB's virtual filesystem, not VTK.
+#
+#   VTK's readers do their own I/O with ifstream and cannot open a URL. So anything
+#   with a URL scheme must be fetched through the VFS and parsed from memory, and
+#   anything without one is handed to VTK as a filename.
+#
+#   This file exists because that decision was previously made with
+#   FileSystem::IsRemoteFile(), which matches a HARDCODED table in DuckDB core
+#   (EXTENSION_FILE_PREFIXES in src/include/duckdb/main/extension_entries.hpp)
+#   listing only the schemes owned by httpfs and azure. Every other filesystem
+#   extension — the community sshfs (sshfs://), cloudfs (sftp://, gdfs://, spfs://),
+#   duckdb_opendalfs — registers itself with RegisterSubSystem() and is dispatched by
+#   CanHandleFile(), which that table knows nothing about.
+#
+#   The consequence was that 'sshfs://host/mesh.vtu' was classified as a LOCAL path
+#   and the URL was handed to VTK's ifstream, which failed on a file DuckDB could
+#   have opened perfectly well. These assertions pin the scheme-based rule so that
+#   cannot regress. No filesystem extension is required to run them.
+# group: [vtk]
+
+require vtk
+
+# ---------------------------------------------------------------------------
+# A scheme no loaded filesystem handles must be reported AS a scheme.
+# ---------------------------------------------------------------------------
+# Before the fix this said plain "no such file", because the path was treated as
+# local — the error blamed the file instead of the missing filesystem extension.
+statement error
+ATTACH 'sftp://example.invalid/mesh.vtu' AS m (TYPE vtk);
+----
+no loaded DuckDB filesystem handles the 'sftp://' scheme
+
+statement error
+SELECT * FROM vtk_points('sshfs://example.invalid/mesh.vtu');
+----
+no loaded DuckDB filesystem handles the 'sshfs://' scheme
+
+# Schemes owned by core extensions must keep working the same way.
+statement error
+SELECT * FROM vtk_points('s3://example-invalid-bucket/mesh.vtu');
+----
+duck_vtk: cannot read
+
+# ---------------------------------------------------------------------------
+# A local path must NOT be mistaken for a URL.
+# ---------------------------------------------------------------------------
+# The scheme grammar requires at least two characters before "://", so a Windows
+# drive letter ("C://x") can never be read as a scheme. A missing local file must
+# still produce the plain local message, with no mention of a filesystem extension.
+statement error
+SELECT * FROM vtk_points('test/data/does_not_exist.vtu');
+----
+duck_vtk: cannot read 'test/data/does_not_exist.vtu': no such file
+
+query I
+SELECT source_kind FROM vtk_info('test/data/legacy/uGridEx.vtk');
+----
+local
+
+# ---------------------------------------------------------------------------
+# file:// — the scheme that proves the routing, with no extension needed.
+# ---------------------------------------------------------------------------
+# DuckDB's LocalFileSystem strips a file:// prefix in ExpandPath(), so the VFS can
+# open it; VTK cannot. It is therefore the one scheme where the read-through-VFS
+# path is exercised end to end without any third-party extension — and it is
+# exactly the case IsRemoteFile() got wrong, since file:// is not in its table.
+#
+# A file:// URL must be absolute, so the path is built from __BUILD_DIRECTORY__,
+# which the sqllogictest runner substitutes with the absolute build directory
+# (test/sqlite/CMakeLists.txt passes -DDUCKDB_BUILD_DIRECTORY=${PROJECT_BINARY_DIR}).
+# Build directories are two levels below the repo root — build/release, build/debug —
+# so ../.. reaches the tree containing test/data. getenv() is deliberately not used:
+# it lives in the core_functions extension and is not loaded in this test binary.
+query II
+SELECT num_points, num_cells
+FROM vtk_info('file://__BUILD_DIRECTORY__/../../test/data/legacy/uGridEx.vtk');
+----
+27	12
+
+# The scheme is reported, and the reader is the in-memory variant — which is what
+# proves the bytes came through the VFS rather than being handed to VTK as a path.
+query I
+SELECT source_kind FROM vtk_info('file://__BUILD_DIRECTORY__/../../test/data/legacy/uGridEx.vtk');
+----
+file
+
+query I
+SELECT reader_class LIKE '%(in-memory)%'
+FROM vtk_info('file://__BUILD_DIRECTORY__/../../test/data/legacy/uGridEx.vtk');
+----
+true
+
+# file_size_bytes must be the real size, not 0. std::filesystem::file_size() cannot
+# stat a URL and silently returned 0 for every remote read; the size now comes from
+# the bytes actually received.
+query I
+SELECT file_size_bytes FROM vtk_info('file://__BUILD_DIRECTORY__/../../test/data/legacy/uGridEx.vtk');
+----
+1012
+
+# And the values must be identical to reading the same file as a plain path.
+query IIIII
+SELECT point_id, x, y, z, scalars
+FROM vtk_points('file://__BUILD_DIRECTORY__/../../test/data/legacy/uGridEx.vtk')
+ORDER BY point_id LIMIT 2;
+----
+0	0.0	0.0	0.0	0.0
+1	1.0	0.0	0.0	1.0

@@ -6,6 +6,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -26,15 +27,63 @@ namespace {
 //! process. 64 GiB is far above any real mesh and far below "kills the machine".
 constexpr int64_t MAX_IN_MEMORY_BYTES = int64_t(64) * 1024 * 1024 * 1024;
 
+//! Returns the URL scheme of a path ("s3", "ssh", "sftp", …), or "" if it has none.
+//!
+//! Deliberately NOT FileSystem::IsRemoteFile(). That matches the path against
+//! EXTENSION_FILE_PREFIXES, a *hardcoded* table in DuckDB core
+//! (`src/include/duckdb/main/extension_entries.hpp`) that lists only the schemes
+//! owned by two core extensions: http/https/s3/s3a/s3n/gcs/gs/r2/hf (httpfs) and
+//! azure/az/abfss (azure). Every *other* filesystem extension registers itself with
+//! `FileSystem::RegisterSubSystem()` and is dispatched by `CanHandleFile()`, which
+//! that table knows nothing about — including the community `sshfs` (`ssh://`),
+//! `cloudfs` (`sftp://`, `gdfs://`, `spfs://`, …) and `duckdb_opendalfs`.
+//!
+//! Verified against DuckDB v1.5.5: `read_csv('ssh://host/x.csv')` falls through to
+//! the LOCAL filesystem's glob and reports "No files found that match the pattern",
+//! whereas `read_csv('s3://…')` raises MissingExtensionException. So
+//! `IsRemoteFile("ssh://…")` is false even with sshfs installed and loaded.
+//!
+//! Using IsRemoteFile here therefore classified `ssh://host/mesh.vtu` as a LOCAL
+//! path and handed the URL straight to VTK's `ifstream`, which cannot open a URL —
+//! failing on a file DuckDB itself could read perfectly well. Scheme detection has
+//! no list to fall out of date: every present and future filesystem extension is
+//! routed through the VFS automatically.
+//!
+//! `file://` is included on purpose. DuckDB's LocalFileSystem strips that prefix in
+//! ExpandPath(), but VTK does not, so it must take the read-through-VFS path too.
+std::string UrlScheme(const std::string &path) {
+	// RFC 3986: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ), then "://".
+	const auto sep = path.find("://");
+	if (sep == std::string::npos || sep == 0) {
+		return "";
+	}
+	// A one-character "scheme" is a Windows drive letter, never a real scheme.
+	// Requiring two rules out `C://path` without special-casing the platform.
+	if (sep < 2) {
+		return "";
+	}
+	if (!std::isalpha(static_cast<unsigned char>(path[0]))) {
+		return "";
+	}
+	for (size_t i = 1; i < sep; i++) {
+		const unsigned char c = static_cast<unsigned char>(path[i]);
+		if (!std::isalnum(c) && c != '+' && c != '-' && c != '.') {
+			return "";
+		}
+	}
+	return StringUtil::Lower(path.substr(0, sep));
+}
+
 class DuckDBFileSource : public VtkFileSource {
 public:
 	explicit DuckDBFileSource(FileSystem &fs) : fs(fs) {
 	}
 
 	bool IsLocalPath(const std::string &path) override {
-		// FileSystem::IsRemoteFile understands every scheme DuckDB knows about, so
-		// this stays correct as the user loads httpfs, azure, and so on.
-		return !FileSystem::IsRemoteFile(path);
+		// "Local" means exactly one thing here: VTK's own file I/O can open it.
+		// That is true when there is no URL scheme, and false otherwise —
+		// regardless of which extension, if any, can handle that scheme.
+		return UrlScheme(path).empty();
 	}
 
 	bool Exists(const std::string &path) override {
@@ -83,11 +132,8 @@ public:
 	}
 
 	std::string Describe(const std::string &path) override {
-		string extension;
-		if (FileSystem::IsRemoteFile(path, extension)) {
-			return extension.empty() ? "remote" : extension;
-		}
-		return "local";
+		const auto scheme = UrlScheme(path);
+		return scheme.empty() ? "local" : scheme;
 	}
 
 private:

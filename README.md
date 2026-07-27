@@ -137,7 +137,7 @@ One row per array: `association` (`POINT`/`CELL`/`FIELD`), `array_index`, `name`
 
 ### `vtk_info` — exactly one row
 
-`file_path`, `file_size_bytes`, `reader_class`, `dataset_class`, `num_points`, `num_cells`, `num_point_arrays`, `num_cell_arrays`, `num_field_arrays`, `bounds_{x,y,z}_{min,max}`, `vtk_version`, `extension_version`. Bounds are NULL for an empty dataset.
+`file_path`, `file_size_bytes`, `reader_class`, `dataset_class`, `num_points`, `num_cells`, `num_point_arrays`, `num_cell_arrays`, `num_field_arrays`, `bounds_{x,y,z}_{min,max}`, `vtk_version`, `extension_version`, `source_kind`. Bounds are NULL for an empty dataset. `source_kind` is `local` for a plain path and the URL scheme (`http`, `s3`, `file`, …) otherwise.
 
 ## Table functions
 
@@ -187,7 +187,36 @@ Array names are used **verbatim**, including spaces, dots, unicode and mixed cas
 
 **Working:** legacy `.vtk` (ascii + binary; UnstructuredGrid, PolyData, StructuredGrid, StructuredPoints, RectilinearGrid, and field-only `DATASET FIELD`), XML `.vtu` `.vtp` `.vts` `.vtr` `.vti` (ascii, binary, appended, compressed). Higher-order/quadratic/Lagrange/Bézier cells all read.
 
-**Rejected with a clear error, not yet supported:** multiblock `.vtm`, time series `.pvd`, parallel `.pvtu`, and the CAE importers (ExodusII, CGNS, VTKHDF, EnSight, OpenFOAM). The last group needs VTK built with those optional modules; `cmake/DuckVTKFindVTK.cmake` probes for them and degrades gracefully.
+**Rejected with a clear error, not yet supported:** multiblock `.vtm`, time series `.pvd`, parallel `.pvtu`, and the CAE importers (ExodusII, CGNS, VTKHDF, EnSight, OpenFOAM). The linked VTK module set is fixed and declared in `cmake/DuckVTKFindVTK.cmake` (`DUCK_VTK_REQUIRED_COMPONENTS`), so support for a format is a property of the release, not of the build machine — enabling one means adding the module to *both* that list and `vcpkg_ports/vtk-minimal/portfile.cmake`, which `make submit-check` verifies agree. `docs/ROADMAP.md` gives the per-format cost; note `OpenFOAM`/`.obj`/`.stl` are **blocked** upstream, not merely unimplemented, because VTK's `IOGeometry` privately depends on `RenderingCore`.
+
+## Remote files
+
+Paths are routed by URL scheme. Anything **without** a scheme is handed to VTK as a filename. Anything **with** one is fetched through DuckDB's virtual filesystem and parsed from memory, because VTK's readers do their own `ifstream` I/O and cannot open a URL.
+
+That means any scheme a loaded DuckDB filesystem extension can open works, with no code here:
+
+```sql
+LOAD httpfs;
+SELECT * FROM vtk_points('https://example.org/mesh.vtu');
+ATTACH 's3://bucket/run/mesh.vtu' AS m (TYPE vtk, READ_ONLY);
+SELECT source_kind FROM m.vtk_info;   -- 's3'
+```
+
+The extension does not depend on `httpfs`, `azure`, or anything else — it simply stops bypassing the VFS. Scheme detection is deliberately *not* `FileSystem::IsRemoteFile()`, which matches a hardcoded table in DuckDB core listing only the `httpfs` and `azure` schemes; see the comment in `src/vtk/vtk_file_source.cpp` and `test/sql/remote_schemes.test`.
+
+**SFTP / SSH.** There is no SFTP filesystem in DuckDB core. Two community extensions offer one, and as of DuckDB v1.5.5 neither is usable on `linux_amd64`:
+
+| Extension | Scheme | Status (measured 2026-07-27, DuckDB v1.5.5, linux_amd64) |
+|---|---|---|
+| `sshfs` | `sshfs://` | Installs and loads, and *is* dispatched by the VFS, but every SSH handshake fails. Its bundled libssh2 (`libssh2_1.11.1_DEV`) sends a `SSH2_MSG_GLOBAL_REQUEST` (packet type 80) before key exchange completes; `sshd` correctly answers `SSH2_MSG_DISCONNECT: protocol error: rcvd type 80`. Reproduced against OpenSSH **9.2** and **10.3**, so it is not a server-configuration or algorithm issue. Client-side defect, upstream of this project |
+| `cloudfs` | `sftp://` | No binary published for `v1.5.5/linux_amd64` (HTTP 404) |
+
+duck_vtk is ready for both the moment either works — `sftp://` and `sshfs://` already route through the VFS, which is exactly what `test/sql/remote_schemes.test` pins. Until then, the practical options are to serve the meshes over HTTP/S3 (`httpfs`, fully working — verified end to end), or to stage files locally with `scp`/`rsync` first.
+
+**Two things to know about any remote read:**
+
+- **The whole object is read into memory**, then parsed — so a remote read costs roughly twice the file size in RAM during parse. Reads above 64 GiB are refused outright rather than attempted.
+- **There is no range-request optimisation.** VTK needs the whole file, so `LIMIT 1` on a remote mesh still downloads all of it.
 
 ## Limitations (deliberate, documented)
 
@@ -202,7 +231,7 @@ Array names are used **verbatim**, including spaces, dots, unicode and mixed cas
 ## Testing
 
 ```bash
-make test            # sqllogictest — 13 files, 328 assertions
+make test            # sqllogictest — 14 files, 348 assertions
 make invariants      # 15 properties × every corpus file
 make oracle          # elementwise diff against an independent Python VTK
 make smoke           # build + load, including into the SYSTEM duckdb
@@ -211,10 +240,10 @@ make check           # everything
 make check-api-compat EXTRA_DUCKDB_SRC=/tmp/duckdb-1.4.5   # version shim, in seconds
 ```
 
-Verified on **DuckDB 1.5.5 and 1.4.5 (LTS)**: 328 sqllogictest assertions across 13
+Verified on **DuckDB 1.5.5 and 1.4.5 (LTS)**: 348 sqllogictest assertions across 14
 files, and 15 invariants over 66 corpus files (2 skipped), pass on both. Re-running
 the SQL suite through the in-memory parse path used for remote reads
-(`make test-memory-reads`) yields 784 assertions and must agree elementwise. Building against LTS is what caught a
+(`make test-memory-reads`) yields 824 assertions and must agree elementwise. Building against LTS is what caught a
 `CREATE INDEX` crash that 1.5.x masks — see the `BindCreateIndex` override.
 
 Correctness is established against **independent ground truth**, never against the extension itself: a Python VTK build that shares no code with the C++ one, plus hand-derived values for three ASCII fixtures (see `docs/research/04-test-data-corpus.md` §4). The 82-file corpus is committed with a checksum manifest (`test/data/MANIFEST.sha256`, verified by `make data`).
@@ -224,8 +253,10 @@ The standout invariant cross-checks SQL-computed bounds against VTK's independen
 ## Submitting to DuckDB community extensions
 
 The repo is structured for submission. `community-extension/description.yml` is
-the descriptor to copy into a `duckdb/community-extensions` PR; it has two TODOs
-(the GitHub repo path and maintainer handle).
+the descriptor to copy into a `duckdb/community-extensions` PR. It has four TODOs,
+all of which need the production repo to exist first: `repo.github`, `repo.ref`
+(a 40-char SHA, not a branch — 269 of 293 listed extensions do this), `repo.andium`
+(the commit built against the 1.4 LTS line), and `maintainers`.
 
 ```bash
 make submit-check     # everything that must hold before submitting
