@@ -4,9 +4,20 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 EXT_NAME=vtk
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
-# We link the system/Homebrew VTK via find_package rather than vcpkg, so there is
-# no vcpkg.json in this repo and VCPKG_TOOLCHAIN_PATH is intentionally unset.
-# See docs/design/03-architecture-and-roadmap.md §5 for why.
+# VTK comes from vcpkg. `vcpkg.json` declares a dependency on `vtk-minimal`, our
+# own overlay port in vcpkg_ports/, because vcpkg's official `vtk` port is unusable
+# here (it hardcodes rendering ON and is pinned at 9.3.0-pv, a ParaView fork).
+#
+# A LOCAL build does not have to go through vcpkg: cmake/DuckVTKFindVTK.cmake takes
+# whatever `find_package(VTK)` resolves, so `./scripts/build_minimal_vtk.sh` or
+# -DVTK_DIR=... both work and are the fast path for development. The vcpkg manifest
+# is what community-extensions' CI uses, where VCPKG_TOOLCHAIN_PATH is set for us
+# and nothing on the runner may be assumed.
+#
+# (An earlier version of this comment said there was no vcpkg.json and that vcpkg
+# was deliberately avoided. That was true before the community-extensions work and
+# is no longer; docs/design/03 §5 carries the same stale claim and is corrected
+# there.)
 
 # Use Ninja when available: DuckDB's build is large and Ninja's dependency
 # handling makes incremental extension rebuilds substantially faster.
@@ -15,13 +26,22 @@ ifneq ($(shell command -v ninja 2>/dev/null),)
 	GEN ?= ninja
 endif
 
-# Enable the C++ (Catch2) unit tests.
+# Keep the door open for C++ (Catch2) unit tests.
 #
 # extension-ci-tools hardcodes -DENABLE_UNITTEST_CPP_TESTS=FALSE into its
-# BUILD_FLAGS, so test/cpp/*.cpp would be silently ignored. EXT_FLAGS is appended
-# AFTER that in the cmake command line, so repeating the option here wins.
-# Without this, the L1 unit tests (including the int64 precision test, which is
-# the most important single test in the project) never run.
+# BUILD_FLAGS, so any test/cpp/*.cpp would be SILENTLY ignored. EXT_FLAGS is
+# appended AFTER that on the cmake command line, so repeating the option here wins.
+#
+# IMPORTANT, so nobody is misled by this line: there is currently NO test/cpp/
+# directory, so this flag enables nothing today. The L1 unit tests it was intended
+# for were deliberately delivered through the SQL layer instead — see
+# docs/design/02-validation-and-testing.md §4 for the case-by-case mapping. In
+# particular the int64 precision test, the most important single test in the
+# project, lives in test/sql/precision.test and DOES run.
+#
+# The flag is retained so that adding test/cpp/*.cpp later needs no build change.
+# If you do add one, verify it actually executes rather than assuming: a Catch2
+# suite that is silently skipped is indistinguishable from one that passes.
 EXT_FLAGS += -DENABLE_UNITTEST_CPP_TESTS=TRUE
 
 # Stamp the correct DuckDB version into the extension's metadata footer.
@@ -179,7 +199,7 @@ check: phase0 release smoke test oracle invariants
 
 ## Print the resolved VTK configuration (useful when diagnosing load failures)
 print-vtk:
-	@grep -E "duck_vtk: (VTK_|VTK library|required|optional)" build/release/CMakeCache.txt 2>/dev/null \
+	@grep -E "duck_vtk: (VTK_|VTK library|required|linked)" build/release/CMakeCache.txt 2>/dev/null \
 		|| echo "No configured build yet; run 'make release' first."
 
 ## Verify the DuckDB 1.4/1.5 version shim against one or more source trees.
@@ -259,6 +279,14 @@ DOCKER_IMAGE_CI ?= duck-vtk-ci
 DOCKER_CCACHE   ?= duck-vtk-ccache
 
 ## Build the CI container image.
+##
+## The image BAKES the DuckDB version as `ENV DUCKDB_VERSION_TAG`. Because this
+## Makefile sets that variable with `?=`, the baked value takes precedence over the
+## tag derived from the duckdb submodule — so a stale image silently stamps the wrong
+## version into the extension and `LOAD` then refuses it. `ci-verify` depends on this
+## target so the normal path always rebuilds; the risk is only for someone reusing the
+## image by hand with `docker run`. docker/entrypoint_ci.sh detects the disagreement
+## and says so rather than letting stage 4 report a bare "version mismatch".
 ci-image:
 	docker build -f docker/Dockerfile.ci -t $(DOCKER_IMAGE_CI) \
 		--build-arg DUCKDB_VERSION_TAG=$(DUCKDB_VERSION_TAG) .

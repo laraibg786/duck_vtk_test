@@ -177,7 +177,7 @@ Research doc 03 was written before VTK finished installing, so it cites docs rat
 - `vtkAlgorithm::Update()` return type (whether it can be used as a success signal)
 - `vtkAbstractArray::GetArrayType()` enumerator spellings, used by the AOS/SOA guard
 - `vtk_module_autoinit` ordering relative to `target_link_libraries`
-- Which optional IO modules the bottle actually ships (`IOEnSight`, `IOExodus`, `IOCGNS`, `IOHDF`)
+- Which optional IO modules the bottle actually ships (`IOEnSight`, `IOExodus`, `IOCGNSReader`, `IOHDF`). Moot now: the build links a fixed module set and no longer probes for optional ones — see the note in `cmake/DuckVTKFindVTK.cmake` and `docs/ROADMAP.md` §3
 
 ---
 
@@ -270,7 +270,7 @@ Build L4 on Phase 2's functions. Follow research doc 02's skeleton, checked agai
 
 ### Phase 4 — Tests, docs, CI — ✅ **DONE**
 
-> 10 sqllogictest files / 594 assertions, invariant runner, oracle harness, Python
+> 13 sqllogictest files / 328 assertions (measured), invariant runner, oracle harness, Python
 > client smoke test, README, LICENSE, and a CI matrix over DuckDB 1.5.4 + 1.4.5 LTS
 > + clang.
 

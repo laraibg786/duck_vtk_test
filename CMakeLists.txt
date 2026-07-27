@@ -19,8 +19,10 @@ set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
 project(${TARGET_NAME} CXX)
 
-# Must match DuckDB v1.5.4's own standard. Raising this independently of DuckDB
-# risks ODR/ABI mismatches in headers shared with the loading process.
+# Must match the standard DuckDB itself is built with — C++17 on both the v1.5 and
+# v1.4 lines. Raising this independently of DuckDB risks ODR/ABI mismatches in
+# headers shared with the loading process. Do not pin this to a specific DuckDB
+# patch release in a comment; the version moves and the comment does not.
 set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to enforce")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

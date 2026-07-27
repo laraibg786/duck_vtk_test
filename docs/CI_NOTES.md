@@ -40,7 +40,8 @@ From `v1.5-variegata/config/distribution_matrix.json`:
 | `wasm_eh` / `wasm_threads` | false | false |
 
 Practical consequence: `linux_*_musl` and `windows_arm64` are **not built unless you
-opt in**. Excluding them, as we initially did, was redundant.
+opt in** — on this line. Excluding them here is redundant *for v1.5 only*; see §2,
+which is why the descriptor names them anyway.
 
 Also note `windows_amd64_rtools` appears in some extensions' `excluded_platforms`
 strings but is **not in the v1.5 matrix at all**, so excluding it is a no-op.
@@ -265,3 +266,58 @@ Every run annotates:
 
 That comes from `_extension_distribution.yml` using `actions/checkout@v4`. Nothing to
 fix on our side.
+
+## 17. A matrix cannot drive `uses:` — and getting it wrong fails with NO failing job
+
+The most expensive one so far, because the failure mode actively misleads you.
+
+We expressed both DuckDB lines as one `distribution` job with a matrix over
+`duckdb_version` / `ci_tools_version`, keeping a single
+`uses: …/_extension_distribution.yml@v1.5-variegata`. GitHub resolves
+reusable-workflow references **before** matrix expansion, so every matrix entry ran
+against the v1.5 workflow regardless of the `ci_tools_version` it was handed.
+
+That is not merely redundant. The two releases disagree about where the macOS runner
+label comes from:
+
+| | `v1.5-variegata` | `v1.4-andium` |
+|---|---|---|
+| `macos:` job | `runs-on: ${{ matrix.runner }}` | `runs-on: macos-latest` (hardcoded) |
+| `osx` entries in `distribution_matrix.json` | include `"runner": "macos-15"` | **no `runner` key at all** |
+
+So the v1.4.5 entry fed v1.4-andium's config into v1.5's workflow, `runs-on`
+evaluated to empty, and GitHub **refused to create the job**. The observable result:
+
+```
+$ gh run view <id> --json jobs --jq '.jobs[] | "\(.conclusion)\t\(.name)"'
+success  …            # all 16 jobs
+skipped  …
+$ gh api …/runs/<id> --jq .conclusion
+failure                # the run itself
+```
+
+Sixteen jobs, none failed, run red, and the v1.4.5 **MacOS group absent entirely** —
+no record to click into. Easy to misread as a GitHub outage.
+
+**The rule: the `@ref` and the `ci_tools_version` input must name the same release.**
+Since `uses:` cannot be templated, supporting two lines means two separate top-level
+jobs, which is what `MainDistributionPipeline.yml` now does and what every extension
+in the ecosystem that builds the LTS line does — a survey of all 293 listed community
+extensions found 6 building the andium line, all 6 pinning `@v1.4-andium`, and **zero**
+using a matrix here. `scripts/submit_check.sh` now fails on a mismatch.
+
+Corollary for diagnosis: when a run is red but no job is, look for a job group that is
+**missing** rather than failing, and check `runs-on` for an empty expression.
+
+## 18. Only 6 of 293 extensions build the LTS line in their own CI
+
+Worth knowing before spending CI minutes on it: community-extensions'
+`build_andium.yml` is `if: false`, so **the LTS line is not built for a submission PR
+at all**. Anything you learn from an andium job in your own repo is early warning for
+when it is re-enabled, not submission evidence.
+
+The descriptor hook for it is `repo.andium`, read by their `scripts/build.py` only when
+`DUCKDB_VERSION == v1.4.5`. 72 of 293 descriptors set it; 65 point it at a **different**
+commit from `repo.ref` (a separate branch per line) and 7 at the same commit (one tree
+serving both). `repo.ref` itself is a raw 40-char SHA in 269 of 293 — not a branch, so
+that what upstream rebuilds later is what was reviewed.

@@ -1,5 +1,25 @@
 # DuckDB v1.5.4 Out-of-Tree C++ Extension Reference
 
+> **VERSION SCOPE — read before trusting a line number.**
+>
+> This document was researched against DuckDB **v1.5.4** (`08e34c447b`), which was
+> the pin at the time. The project now targets **v1.5.5** on the default line and
+> **v1.4.5** on the LTS line; `git ls-tree HEAD duckdb` is the live pin.
+>
+> It is kept at v1.5.4 deliberately rather than rewritten. Every fact here was read
+> from real headers at that tag, and the API facts have held: the `ExtensionLoader` /
+> `DUCKDB_CPP_EXTENSION_ENTRY` entrypoint, the removal of `ExtensionUtil`, and the
+> `LookupSchema`/`LookupEntry` pure virtuals are all unchanged in v1.5.5. Rewriting
+> the citations to a new tag would cost the one thing that makes this useful — that
+> every claim was verified against a specific, checkable revision.
+>
+> What that means in practice: trust the **API shapes**, re-check **`file:line`
+> citations** against the tag you are actually building. The one API that genuinely
+> differs between the 1.4 and 1.5 lines is storage-extension registration, and
+> `CMakeLists.txt` handles it by probing the header rather than by version string —
+> `make check-api-compat` proves both branches compile.
+
+
 Target: DuckDB **v1.5.4** ("Variegata", commit `08e34c447bae34eaee3723cac61f2878b6bdf787`) — matches the
 brew-installed CLI on this machine (`duckdb --version` → `v1.5.4 (Variegata) 08e34c447b`; verified live
 with `pragma_version()` below).

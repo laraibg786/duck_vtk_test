@@ -47,8 +47,8 @@ needs them. They exist because the DuckDB community-extensions CI requires a
 | OS | Linux x86_64 (macOS should work; not yet tested) |
 | Compiler | GCC ≥ 11 or Clang ≥ 14, C++17. Verified with GCC 14.2 |
 | Build tools | CMake ≥ 3.16, Ninja (optional but much faster), ccache (optional, big win) |
-| VTK | ≥ **9.1**. `make configure` builds a minimal 9.6.2 if none is found. 9.1 is the floor because that is the oldest version CI actually builds against (Ubuntu 24.04 ships it) |
-| DuckDB | Built from the pinned submodule. **Verified against 1.5.4 and 1.4.5 (LTS)** — full suite green on both |
+| VTK | ≥ **9.6**, and the build enforces it. `make configure` builds a minimal 9.6.2 if none is found. **Ubuntu 24.04's `libvtk9-dev` (9.1) does not work** — it fails to parse any XML file with an `<AppendedData>` section, leaves `GetErrorCode()` at Success, and hands back an empty mesh. See `cmake/DuckVTKFindVTK.cmake` |
+| DuckDB | Built from the pinned submodule. **Verified against 1.5.5 and 1.4.5 (LTS)** — full suite green on both |
 
 Override the compiler the normal CMake way:
 
@@ -86,13 +86,15 @@ The one API that differs between 1.4 and 1.5 is storage-extension registration. 
 
 ### VTK
 
-Three supported ways, in order of preference:
+Two supported ways, in order of preference:
 
 ```bash
 ./scripts/build_minimal_vtk.sh          # recommended: ABI-matched to your compiler
-sudo apt install libvtk9-dev            # needs root; VTK 9.3
 brew install vtk                        # large: pulls Qt/mesa/llvm (~2.8 GB)
 ```
+
+`apt install libvtk9-dev` is **not** a supported path: Debian/Ubuntu ship 9.1-9.3,
+below the enforced 9.6 floor, and `find_package` will reject them.
 
 Point at a specific one with `make release VTK_DIR=/path/to/lib/cmake/vtk-9.6`.
 
@@ -200,7 +202,7 @@ Array names are used **verbatim**, including spaces, dots, unicode and mixed cas
 ## Testing
 
 ```bash
-make test            # sqllogictest — 594 assertions, green on 1.5.4 and 1.4.5
+make test            # sqllogictest — 13 files, 328 assertions
 make invariants      # 15 properties × every corpus file
 make oracle          # elementwise diff against an independent Python VTK
 make smoke           # build + load, including into the SYSTEM duckdb
@@ -209,11 +211,13 @@ make check           # everything
 make check-api-compat EXTRA_DUCKDB_SRC=/tmp/duckdb-1.4.5   # version shim, in seconds
 ```
 
-Verified on **DuckDB 1.5.4 and 1.4.5 (LTS)**: 594 sqllogictest assertions and
-66 files × 15 invariants pass on both. Building against LTS is what caught a
+Verified on **DuckDB 1.5.5 and 1.4.5 (LTS)**: 328 sqllogictest assertions across 13
+files, and 15 invariants over 66 corpus files (2 skipped), pass on both. Re-running
+the SQL suite through the in-memory parse path used for remote reads
+(`make test-memory-reads`) yields 784 assertions and must agree elementwise. Building against LTS is what caught a
 `CREATE INDEX` crash that 1.5.x masks — see the `BindCreateIndex` override.
 
-Correctness is established against **independent ground truth**, never against the extension itself: a Python VTK build that shares no code with the C++ one, plus hand-derived values for three ASCII fixtures (see `docs/research/04-test-data-corpus.md` §4). The 79-file corpus is committed with a checksum manifest.
+Correctness is established against **independent ground truth**, never against the extension itself: a Python VTK build that shares no code with the C++ one, plus hand-derived values for three ASCII fixtures (see `docs/research/04-test-data-corpus.md` §4). The 82-file corpus is committed with a checksum manifest (`test/data/MANIFEST.sha256`, verified by `make data`).
 
 The standout invariant cross-checks SQL-computed bounds against VTK's independent `GetBounds`, which catches x/y/z transposition that no spot check on a symmetric mesh would find.
 
@@ -238,30 +242,49 @@ What compliance required, and how it is handled:
 | Build via `make <build_type>` at repo root | our `Makefile` |
 | DuckDB v1.5.5 (default) and v1.4.5 (Andium/LTS) | both compile; `make check-api-compat` proves the version shim |
 
-**VTK comes from our own vcpkg overlay port**, `vcpkg_ports/vtk-minimal`. vcpkg's
-official `vtk` port is unusable for a database extension: rendering lives in its
-*base* port, so it pulls 26 transitive dependencies including glew, freetype,
-gl2ps and Qt — hours of CI per platform for an OpenGL stack a SQL engine never
-calls. The overlay disables rendering/Qt/Python/MPI/imaging/testing using
-upstream VTK's own CMake options, with **no source patches**, so upgrading VTK is
-a version and hash change rather than a patch to re-base. The dependency closure
-drops from 26 to 3.
+**VTK comes from our own vcpkg overlay port**, `vcpkg_ports/vtk-minimal` (VTK
+9.6.2, the current stable release). vcpkg's official `vtk` port is unusable for a
+database extension on two counts: its portfile **hardcodes**
+`VTK_GROUP_ENABLE_Rendering=YES` with no feature to turn it off, pulling 26 base
+manifest entries including glew, freetype and gl2ps — hours of CI per platform for
+an OpenGL stack a SQL engine never calls — and it is pinned at
+**`9.3.0-pv5.12.1`**, a ParaView fork below our 9.6 floor. (Qt is an opt-in
+*feature* there rather than a default dependency; an earlier version of this note
+said otherwise.)
+
+The overlay disables rendering/Views/Web/imaging/MPI/Python/testing using upstream
+VTK's own CMake options, with **no source patches**, so upgrading VTK is a version
+and hash change rather than a patch to re-base. The dependency closure drops from
+26 to 3 (`expat`, `lz4`, `zlib`).
 
 ### Platform scope
 
-The first submission targets **`linux_amd64` and `linux_arm64`**. The other 11
-matrix platforms are excluded, each for a stated reason: macOS builds cannot be
-verified from the development machine, Windows needs an MSVC VTK build, wasm is
-not viable for VTK at all, and musl needs a fully static VTK. Widen one platform
-at a time, each with a green build behind it — `excluded_platforms` in
-`description.yml` and `exclude_archs` in `.github/workflows/ci.yml` must stay in
-step.
+**Claimed:** `linux_amd64`, `linux_arm64`, `osx_amd64`, `osx_arm64`,
+`windows_amd64`. All five build green through the same reusable workflow
+community-extensions uses.
+
+**Excluded** (6 of 11), each for a stated reason:
+
+| Excluded | Why |
+|---|---|
+| `wasm_mvp`, `wasm_eh`, `wasm_threads` | VTK does not build under Emscripten. Permanent |
+| `linux_amd64_musl`, `linux_arm64_musl` | No static-musl VTK validated. A no-op on the v1.5 matrix (opt-in there) but load-bearing on v1.4, where `linux_amd64_musl` builds unless named |
+| `windows_amd64_mingw` | **DuckDB's own code**, not ours: `tools/sqlite3_api_wrapper` fails under rtools42 mingw with an ambiguous `byte` from `objidl.h`. `h5db` and the core `iceberg` extension exclude it for the same reason |
+
+Note `linux_arm64` is **built but not tested** upstream — both test steps carry
+`if: matrix.duckdb_arch != 'linux_arm64'` because arm64 runs under emulation. A
+green arm64 means it compiled and linked, not that the suite passed.
+
+`excluded_platforms` in `description.yml` and `exclude_archs` in
+`.github/workflows/MainDistributionPipeline.yml` must stay in step;
+`make submit-check` enforces it.
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| `docs/IMPLEMENTATION_PLAN.md` | Phase plan, verified environment facts, v1.5.4 API gotchas |
+| `docs/ROADMAP.md` | **What is missing and what it costs** — unsupported formats with blockers and effort sizes, verified against VTK's module graph |
+| `docs/IMPLEMENTATION_PLAN.md` | Phase plan, verified environment facts, v1.5.x API gotchas |
 | `docs/PHASE0_RESULTS.md` | Toolchain gate results and three corrected assumptions |
 | `docs/design/01-relational-schema.md` | Normative table/column/type contract |
 | `docs/design/02-validation-and-testing.md` | Test layers and definition of done |

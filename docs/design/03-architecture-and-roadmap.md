@@ -14,7 +14,7 @@ ATTACH 'wing.vtu' AS mesh (TYPE vtk);
 SELECT cell_type_name, count(*), avg(pressure) FROM mesh.cells GROUP BY 1;
 ```
 
-It uses the **official VTK C++ library** (Kitware, 9.6.x) for all file parsing. We do not write a VTK parser. This is a deliberate, load-bearing decision: VTK's readers handle ~20 formats, legacy and XML, ascii/binary/appended/compressed, endianness, and the long tail of real-world CAE files that hand-rolled parsers get wrong. The cost is a heavyweight dependency; the benefit is that format correctness is Kitware's problem, not ours.
+It uses the **official VTK C++ library** (Kitware; pinned at 9.6.2, floor 9.6) for all file parsing. We do not write a VTK parser. This is a deliberate, load-bearing decision: VTK's readers handle ~20 formats, legacy and XML, ascii/binary/appended/compressed, endianness, and the long tail of real-world CAE files that hand-rolled parsers get wrong. The cost is a heavyweight dependency; the benefit is that format correctness is Kitware's problem, not ours.
 
 ## 2. Layering
 
@@ -73,7 +73,7 @@ duck_vtk/
 ├── cmake/
 │   ├── DuckVTKFindVTK.cmake    # VTK discovery, component list, RPATH dir
 │   └── DuckVTKOptimize.cmake   # compiler flags; opt-in LTO/native/asan/werror
-├── duckdb/                     # submodule, pinned (v1.5.4 or v1.4.x LTS)
+├── duckdb/                     # submodule, pinned (see `git ls-tree HEAD duckdb`)
 ├── extension-ci-tools/         # submodule, pinned
 ├── src/
 │   ├── vtk_extension.cpp                 # entrypoint + registration
@@ -86,7 +86,7 @@ duck_vtk/
 │   ├── catalog/vtk_catalog.cpp           # L4 — catalog/schema/table/txn manager
 │   └── include/                          # mirrors the above
 ├── test/
-│   ├── data/                   # 79-file corpus, COMMITTED, + MANIFEST.sha256
+│   ├── data/                   # 82-file corpus, COMMITTED, + MANIFEST.sha256
 │   └── sql/*.test              # sqllogictest
 ├── scripts/
 │   ├── configure.sh            # `make configure` — one-command setup
@@ -94,7 +94,11 @@ duck_vtk/
 │   ├── build_minimal_vtk.sh    # the default VTK path
 │   ├── smoke.sh, run_invariants.sh, validate_against_vtk.py, python_smoke.py
 │   └── phase0_spike/           # toolchain go/no-go spike
-├── .github/workflows/ci.yml    # v1.5.4 + v1.4.5 LTS + clang matrix
+├── vcpkg.json                  # declares vtk-minimal + the overlay dirs
+├── vcpkg_ports/vtk-minimal/    # our own VTK port; see §5.1
+├── .github/workflows/
+│   ├── MainDistributionPipeline.yml  # mirrors extension-template; calls extension-ci-tools
+│   └── ci.yml                       # project-owned checks only; calls nothing upstream
 └── docs/{design,research}/
 ```
 
@@ -105,13 +109,41 @@ Splitting either would duplicate machinery rather than separate concerns.
 
 Header layout follows duckdb's own convention: `src/include/<subdir>/<name>.hpp`, included as `"vtk/vtk_dataset.hpp"`, with `include_directories(src/include)`.
 
-## 5. Dependency strategy: minimal source build, not vcpkg, not the brew bottle
+## 5. Dependency strategy: a vcpkg overlay port, plus a minimal source build for local work
 
-The extension-template ships `vcpkg.json` and uses vcpkg to supply OpenSSL. **We use neither vcpkg nor Homebrew for VTK.** VTK comes from a minimal source build via `scripts/build_minimal_vtk.sh`.
+> **SUPERSEDED IN PART — read this box before believing §5.1.**
+>
+> This section was written before the community-extensions work and said "we use
+> neither vcpkg nor Homebrew for VTK", with no `vcpkg.json` in the repo. That is no
+> longer true, and it cannot be: their CI sets `VCPKG_TOOLCHAIN_PATH` and assumes
+> nothing on the runner, so **every** third-party dependency must be declared in a
+> manifest. The repo now has:
+>
+> * `vcpkg.json` — depends on `vtk-minimal`, with `./vcpkg_ports` as an overlay.
+> * `vcpkg_ports/vtk-minimal/` — our own port. See §5.1 for why not the official one.
+>
+> What did NOT change is the *reasoning* in §5.2–§5.3, and it is worth being clear
+> that the two paths coexist rather than one replacing the other:
+>
+> | | Used by | VTK from |
+> |---|---|---|
+> | Local development | `make release`, `make check` | `scripts/build_minimal_vtk.sh`, or any `-DVTK_DIR=` |
+> | community-extensions CI | `MainDistributionPipeline.yml` | the `vtk-minimal` vcpkg port |
+>
+> Both build the **same module set from the same VTK version**, and
+> `scripts/submit_check.sh` fails if the port and the script drift apart. That
+> equivalence is the whole point: the fast local path and the shipping path are not
+> allowed to disagree about what VTK is.
 
-### 5.1 Why not vcpkg
+### 5.1 Why not vcpkg's official `vtk` port
 
-vcpkg's `vtk` port is a full-feature source build: hours, gigabytes of build tree, and a long tail of feature-flag breakage.
+Not "why not vcpkg" — that question is settled above. The official port specifically is unusable here:
+
+- It is pinned at **`9.3.0-pv5.12.1`**, a ParaView fork three minor lines behind current VTK, and below our 9.6 floor.
+- Its portfile **hardcodes** `VTK_GROUP_ENABLE_Rendering=YES` with no feature to turn it off, and carries 26 base manifest entries including `glew`, `gl2ps` and `freetype`, plus a second VTK-derived host build (`vtk-compile-tools`).
+- A full-feature source build costs hours and gigabytes of build tree, with a long tail of feature-flag breakage.
+
+`vtk-minimal` reduces the dependency closure from 26 to 3 (`expat`, `lz4`, `zlib`) using only documented upstream CMake options — **no source patches**, so a VTK bump is a version-and-hash change with no patch to re-base.
 
 ### 5.2 Why not the Homebrew bottle (revised after measurement)
 
@@ -135,14 +167,28 @@ Homebrew *was* the original plan, on the reasoning that a prebuilt bottle beats 
 | Path | Command | Notes |
 |---|---|---|
 | Minimal source build (**default**) | `./scripts/build_minimal_vtk.sh` | No root. ABI-matched |
-| Debian system package | `sudo apt install libvtk9-dev` then `make release VTK_DIR=/usr/lib/x86_64-linux-gnu/cmake/vtk-9.3` | **Needs root** (no passwordless sudo here). VTK 9.3, also ABI-matched, ~50 MB. The fastest option if you have sudo |
+| vcpkg overlay port | automatic under `VCPKG_TOOLCHAIN_PATH` | What community-extensions CI uses. Static, release-only |
 | Homebrew bottle | `brew install vtk` | Works if the download completes; carries the ABI risk in §5.2 |
 
-Note the version spread: research doc 03 documents **9.6.2**; Debian ships **9.3**. The APIs we use are stable across that range, but the version-dependent items in doc 03 §9 must be re-checked against whichever VTK is actually installed.
+> **CORRECTION — the Debian package row was removed.** It read "VTK 9.3, also
+> ABI-matched, ~50 MB. The fastest option if you have sudo", and recommending it was
+> wrong. Ubuntu 24.04's `libvtk9-dev` is **9.1**, and it cannot parse any XML file
+> containing an `<AppendedData>` section: it reports the parse error to the output
+> window, leaves `GetErrorCode()` at `Success`, and returns a valid but **empty**
+> dataset. `cow.vtp` read as 0 points instead of 2903. Appended data is what most
+> real VTK writers emit, so this is not an edge case.
+>
+> A CI job built against that package and passed for months while exercising a
+> broken VTK — the failure is silent in exactly the way that defeats a test suite.
+> The floor is now enforced at **9.6** in `cmake/DuckVTKFindVTK.cmake`, so
+> `find_package` rejects 9.1/9.3 outright rather than letting them through.
+>
+> 9.2–9.5 are untested, not known-bad. Validating one and lowering the floor is a
+> legitimate change; assuming it works is not.
 
 ### 5.5 Consequences to handle explicitly
 
-- **The extension links VTK's shared libraries.** The resulting `.duckdb_extension` is *not* self-contained and will only load where a compatible VTK is resolvable. Acceptable for Phase 1 (developer/local use); it is the main blocker to shipping to the DuckDB community repository, which wants statically linked portable binaries. Phase 5.
+- **A local build links VTK's shared libraries**, so a locally built `.duckdb_extension` is *not* self-contained and only loads where a compatible VTK is resolvable. **This is no longer true of the shipped artifact:** the `vtk-minimal` port builds a static, release-only VTK (`VCPKG_BUILD_TYPE release`, `BUILD_SHARED_LIBS` off for static triplets), which is what makes the community-extensions binaries portable. The distinction matters when reading the RPATH note below — that exists for the local path.
 - **RPATH must be set** so the dlopen'd module finds `libvtkCommonCore-9.6.so` without the user exporting `LD_LIBRARY_PATH`. `CMakeLists.txt` sets `BUILD_RPATH`/`INSTALL_RPATH` from `DUCK_VTK_LIBRARY_DIR`; `scripts/smoke.sh` step 2 verifies it with `ldd`.
 - **Phase 0 still exists and is still a gate**, even though the source build removes the ABI risk. Its job is now to confirm the module set is sufficient, that `vtk_module_autoinit` is wired correctly, and that reads produce correct numbers — cheap insurance before 2000 lines depend on it.
 - `vtk_module_autoinit(TARGETS <both targets> MODULES ${VTK_LIBRARIES})` is **mandatory**. Without it, VTK's object factories are not registered, and readers fail at runtime with confusing "no reader found" or null-output errors while compiling and linking perfectly. This is the most common VTK-integration mistake and it must be applied to *both* the static and the loadable target.
@@ -163,8 +209,8 @@ Not scaffolding; a spike whose only job is to kill the ABI risk in §5.
 
 ### Phase 1 — Extension skeleton that loads (exit: `LOAD` works in the system CLI)
 
-1. Copy the extension-template layout; rename `waddle` → `vtk`. Remove OpenSSL and the vcpkg dependency.
-2. Pin submodules: duckdb at `08e34c447b`, extension-ci-tools at `b777c70d`.
+1. Copy the extension-template layout; rename `waddle` → `vtk`. Replace the template's OpenSSL vcpkg dependency with our own `vtk-minimal` overlay port (the template's *use* of vcpkg is kept — see the correction box in §5).
+2. Pin submodules. The pins have since moved — do **not** treat the values that were written here (`08e34c447b` / `b777c70d`) as current. The gitlinks recorded by `git ls-tree HEAD duckdb extension-ci-tools` are the single source of truth; `scripts/configure.sh` and `scripts/bootstrap_deps.sh` both derive from them rather than hardcoding, and `make check-pin` verifies the derived DuckDB version tag is recorded in `DUCKDB_KNOWN_VERSIONS`.
 3. Register one scalar function `vtk_version()` returning the linked VTK version — this proves VTK is *actually linked and callable from inside DuckDB*, which is strictly more than "it compiled".
 4. Wire `find_package(VTK)` + `vtk_module_autoinit` into both targets.
 
@@ -187,7 +233,23 @@ Build L4 on top of Phase 2's functions. `VtkTableEntry::GetScanFunction` returns
 
 ### Phase 4 — Coverage and ergonomics
 
-Multiblock (`.vtm`) as one schema per block; time series (`.pvd`, numbered sequences) with a `time_step` option or a `time_value` column; `.pvtu` parallel pieces; VTKHDF; the CAE importers VTK already ships (`vtkOpenFOAMReader`, `vtkEnSightGoldReader`, `vtkCGNSReader`, `vtkExodusIIReader`) — each is mostly a `VtkReaderFactory` entry once L1 is uniform. `vector_layout` option. Replacement scan so `FROM 'mesh.vtu'` works.
+> **SUPERSEDED BY `docs/ROADMAP.md`.** The sketch below was written before anyone
+> checked VTK's module graph, and it is wrong in two ways that matter:
+>
+> * "**each is mostly a `VtkReaderFactory` entry once L1 is uniform**" does not hold.
+>   ExodusII, CGNS and EnSight all emit *composite* datasets, so they are gated on a
+>   relational model for multiblock data that does not exist yet — the single largest
+>   item on the roadmap.
+> * **`.pvd` has no reader in VTK at all.** It is a ParaView format; searching VTK
+>   9.6.2 for any path matching `pvd` returns zero files. Supporting it means parsing
+>   the collection manifest ourselves.
+> * **`vtkOpenFOAMReader` is unreachable**, not merely unimplemented: it lives in
+>   `IOGeometry`, which privately depends on `VTK::RenderingCore` and therefore cannot
+>   be built in a rendering-free VTK.
+>
+> `docs/ROADMAP.md` has the verified version, with blockers and effort sizes.
+
+Multiblock (`.vtm`) as one schema per block; time series (`.pvd`, numbered sequences) with a `time_step` option or a `time_value` column; `.pvtu` parallel pieces; VTKHDF; the CAE importers VTK already ships (`vtkOpenFOAMReader`, `vtkEnSightGoldReader`, `vtkCGNSReader`, `vtkExodusIIReader`). `vector_layout` option. Replacement scan so `FROM 'mesh.vtu'` works.
 
 ### Phase 5 — Performance and portability
 
@@ -198,7 +260,7 @@ Only now: cache converted column chunks; parallel scans (split point/cell ranges
 | Decision | Rationale |
 |---|---|
 | Official VTK C++ library, not a custom parser | Format correctness across ~20 formats and their binary/compressed variants is a multi-year problem VTK has already solved |
-| Minimal VTK source build, not vcpkg and not the Homebrew bottle | 54 MB vs 2.8 GB of bottle dependencies, and compiling VTK with the extension's own compiler eliminates the libstdc++ ABI risk outright (§5.2-5.3) |
+| Minimal VTK build (source locally, `vtk-minimal` overlay port in CI) rather than the official vcpkg port or the Homebrew bottle | 54 MB vs 2.8 GB of bottle dependencies; compiling VTK with the extension's own compiler eliminates the libstdc++ ABI risk outright (§5.2-5.3); the official vcpkg port is a ParaView fork at 9.3 with rendering forced on (§5.1) |
 | `ATTACH` via `StorageExtension`, with table functions underneath | Matches the user-facing requirement, but the table functions come first so file-reading correctness is proven before catalog boilerplate |
 | Read-only | Writing VTK files is a separate problem with its own design questions; nothing about this design precludes it later |
 | Eager full read at `ATTACH` | Correct schema discovery for legacy formats requires it, and errors surface where the user can see them. Lazy discovery is a Phase-5 optimisation |

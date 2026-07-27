@@ -113,7 +113,7 @@ cmake -S "VTK-$VTK_VERSION" -B build -G Ninja \
 #     Those formats are out of Phase 1 scope. If they are ever wanted, either
 #     enable RenderingCore (dragging in OpenGL) or read them via a different
 #     module — do not "fix" this by turning rendering back on casually.
-#   IOExodus / IOCGNS / IOHDF
+#   IOExodus / IOCGNSReader / IOHDF
 #     Need external netcdf / cgns / hdf5. Phase 4 concerns; adding them means
 #     installing those libraries first. cmake/DuckVTKFindVTK.cmake probes for
 #     them as OPTIONAL components, so their absence degrades gracefully to

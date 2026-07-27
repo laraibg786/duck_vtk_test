@@ -42,14 +42,14 @@ test -f "$EXT"
 # Load into the OWN build (must always work)
 ./build/release/duckdb -c "LOAD '$EXT'; SELECT vtk_version();"
 
-# Load into the SYSTEM brew DuckDB v1.5.4 (proves ABI/platform compatibility)
+# Load into the SYSTEM brew DuckDB (proves ABI/platform compatibility)
 duckdb -unsigned -c "LOAD '$EXT'; SELECT vtk_version();"
 
 # Confirm the storage extension registered
 duckdb -unsigned -c "LOAD '$EXT'; ATTACH 'test/data/legacy/uGridEx.vtk' AS m (TYPE vtk); SELECT count(*) FROM m.points;"
 ```
 
-The second and third checks are the important ones: they are the difference between "it built" and "a user can use it". The system-CLI load is expected to work because the extension-template's pinned duckdb submodule (`08e34c447b`) is the exact commit the brew v1.5.4 binary was built from — if it *stops* working, that pin has drifted and the smoke test is the tripwire.
+The second and third checks are the important ones: they are the difference between "it built" and "a user can use it". The system-CLI load is expected to work because our pinned duckdb submodule is the exact commit the installed brew DuckDB was built from (`make check-pin` verifies this and says so explicitly) — if it *stops* working, that pin has drifted and the smoke test is the tripwire.
 
 ## 4. L1 — C++ unit tests
 

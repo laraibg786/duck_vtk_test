@@ -1,11 +1,15 @@
 # DuckDB community-extensions submission descriptor.
 #
 # HOW TO SUBMIT
-#   1. Fill in the two TODOs below (repo.github and maintainers).
+#   1. Fill in the TODOs below (repo.github, maintainers, repo.ref, repo.andium).
 #   2. Push this repo to GitHub and note the exact commit SHA.
 #   3. Fork github.com/duckdb/community-extensions, copy this file to
 #        extensions/vtk/description.yml
 #      (drop these comments; keep the keys), set repo.ref to that SHA, and open a PR.
+#      The directory name MUST equal extension.name — their scripts/build.py raises
+#      on a mismatch before anything is built.
+#
+# `make submit-check` verifies the mechanical parts of this offline in ~1 second.
 #
 # Their CI then builds this repo from scratch for every non-excluded platform using
 # duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml. It clones
@@ -30,14 +34,21 @@ extension:
 
   # Platform scope.
   #
-  # Only wasm is excluded, and permanently: VTK does not build meaningfully under
-  # Emscripten, so there is nothing to gain by trying.
+  # Three groups are excluded, for three different reasons:
   #
-  # Everything else is claimed, but with an honest caveat: linux_amd64 is the only
-  # target that has been built and tested on the development machine. The rest rely
-  # on CI, which runs the SAME reusable workflow community-extensions uses
-  # (.github/workflows/ci.yml, `distribution` job) — so a green CI here is the same
-  # evidence their pipeline would produce. Do not submit until that job is green.
+  #   wasm_*              permanent. VTK does not build under Emscripten.
+  #   linux_*_musl        no static-musl VTK has been validated. A no-op on the
+  #                       v1.5 matrix (opt_in there) but load-bearing on v1.4,
+  #                       where linux_amd64_musl is opt_in:false and so builds
+  #                       unless named. See docs/CI_NOTES.md §1-2.
+  #   windows_amd64_mingw DuckDB's own code, not ours. See the note further down.
+  #
+  # Everything else is claimed, with an honest caveat: linux_amd64 is the only
+  # target built and tested on the development machine. The rest rely on CI, which
+  # calls the SAME reusable workflow community-extensions calls, at the same @ref
+  # and with the same vcpkg pin (.github/workflows/MainDistributionPipeline.yml,
+  # `duckdb-latest-build`) — so a green run there is the same evidence their
+  # pipeline would produce. Do not submit until that job is green.
   #
   # Known per-platform risks, in rough order:
   #   linux_arm64        cross-compiled VTK via vcpkg; expected to work, slow
@@ -76,8 +87,45 @@ extension:
 repo:
   # TODO: replace with the published repository, e.g. someorg/duck_vtk
   github: TODO-owner/duck_vtk
-  # TODO: replace with the exact commit SHA being submitted (not a branch name).
+
+  # The commit built for the DEFAULT DuckDB line (v1.5.5). A 40-character SHA, not
+  # a branch or tag: a branch keeps moving after the PR is merged, so what upstream
+  # rebuilds later would no longer be what was reviewed. This is what the ecosystem
+  # does — of the 293 listed extensions, 269 use a raw SHA here and only 19 use a
+  # version tag.
+  #
+  # TODO: replace with the exact commit SHA being submitted.
   ref: TODO-commit-sha
+
+  # The commit built for the DuckDB 1.4 LTS ("Andium") line.
+  #
+  # scripts/build.py upstream reads this key specifically when DUCKDB_VERSION is
+  # v1.4.5 and substitutes it for repo.ref, which is what makes one descriptor able
+  # to serve two DuckDB lines from two different trees. 72 of 293 extensions set it.
+  #
+  # Two ways to use it, both with precedent:
+  #
+  #   ONE TREE  — point it at the SAME sha as repo.ref. Correct while a single
+  #               source tree still compiles against both lines, which is the case
+  #               here: cmake/../CMakeLists.txt probes storage_extension.hpp for
+  #               StorageExtension::Register and picks the 1.4 or 1.5 registration
+  #               API accordingly, and `make check-api-compat` proves both branches.
+  #               7 extensions do this (duck_hunt, celestial, duck_block_utils, …).
+  #
+  #   TWO TREES — maintain a long-lived `lts` branch and point this at its head
+  #               commit. This is what the other 65 do. Switch to it the moment the
+  #               two lines need genuinely different code, rather than accumulating
+  #               #ifdefs on main.
+  #
+  # Start with ONE TREE. When it becomes TWO, the only change here is this value.
+  #
+  # NOTE: upstream's build_andium.yml is currently `if: false`, so this key has no
+  # effect on a submission PR today. It is declared because our own
+  # MainDistributionPipeline.yml builds the LTS line, and because the key costs
+  # nothing and is the documented hook for when that workflow is re-enabled.
+  #
+  # TODO: set to the same value as repo.ref above.
+  andium: TODO-commit-sha
 
 docs:
   hello_world: |

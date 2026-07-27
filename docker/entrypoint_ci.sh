@@ -91,6 +91,35 @@ fi
 # A bind-mounted git directory carries the host's UID, which git refuses to read.
 git config --global --add safe.directory '*' 2>/dev/null || true
 export DUCKDB_GIT_MIRROR CITOOLS_GIT_MIRROR DUCKDB_SHA CITOOLS_SHA
+
+# GUARD: a STALE IMAGE silently wins over the submodule pin.
+#
+# Dockerfile.ci bakes `ENV DUCKDB_VERSION_TAG=<arg>`, captured when the image was
+# built. The project Makefile sets that variable with `?=`, which respects the
+# environment — so the baked value overrides the tag derived from the duckdb
+# submodule's actual SHA. Bump the submodule without rebuilding the image and the
+# extension is stamped with the OLD version while linked against the NEW DuckDB.
+# Stage 4 catches it, but reports it as an unexplained "version mismatch"; this says
+# what actually happened.
+#
+# Only warn-and-correct when the derived tag is known: an unrecorded pin is
+# `make check-pin`'s job to report, not ours.
+# Resolved by reading the Makefile's DUCKDB_KNOWN_VERSIONS table directly rather than
+# by recursing into make: `make -f - ` cannot `include Makefile` reliably, and invoking
+# the real Makefile here would re-trigger the bootstrap rule.
+derived_tag=""
+sub_sha=$(git -C duckdb rev-parse HEAD 2>/dev/null || true)
+if [[ -n "$sub_sha" ]]; then
+  derived_tag=$(grep -oE "${sub_sha}=v[0-9]+\.[0-9]+\.[0-9]+" Makefile 2>/dev/null | head -1 | cut -d= -f2)
+fi
+if [[ -n "$derived_tag" && "$derived_tag" != "$DUCKDB_VERSION_TAG" ]]; then
+  printf '\033[1;33m[warn]\033[0m image was built for DUCKDB_VERSION_TAG=%s but the\n' "$DUCKDB_VERSION_TAG"
+  printf '       duckdb submodule pin derives %s. The image is STALE.\n' "$derived_tag"
+  printf '       Using %s. Rebuild with `make ci-image` to silence this.\n' "$derived_tag"
+  DUCKDB_VERSION_TAG="$derived_tag"
+  export DUCKDB_VERSION_TAG
+fi
+
 # No `make configure` on purpose: `make release` alone has to work, because that is
 # all the community-extensions CI runs.
 make release -j"$JOBS" >/tmp/build.log 2>&1 || { tail -60 /tmp/build.log; die "make release failed"; }

@@ -19,10 +19,27 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# These MUST match the values in the Makefile and .gitmodules. `make check-pin`
-# cross-checks the duckdb one against the installed CLI.
-DUCKDB_SHA="${DUCKDB_SHA:-08e34c447bae34eaee3723cac61f2878b6bdf787}"   # v1.5.4
-CITOOLS_SHA="${CITOOLS_SHA:-b777c70d30942cca5bef62d6d4fa23a13362f398}"
+# Derived from the gitlinks the repo already records, NOT hardcoded.
+#
+# This is the same fix scripts/bootstrap_deps.sh already carries, and the reason is
+# worth repeating because the two scripts had drifted apart: this file still said
+# duckdb 08e34c44 (v1.5.4) and extension-ci-tools b777c70d, while the gitlinks say
+# d8cdaa33 (v1.5.5) and 72e76e99 (v1.5-variegata). So `make configure` and
+# `make release` — which bootstraps via bootstrap_deps.sh — installed DIFFERENT
+# dependency versions, and which one you got depended on which command you ran
+# first. Nothing failed loudly; the version stamped into the extension just
+# depended on your setup path.
+#
+# Deriving removes the class of bug. The literals remain only as a fallback for a
+# source export with no git metadata, where `git ls-tree` cannot work, and they are
+# the same fallbacks bootstrap_deps.sh uses.
+gitlink_sha() {
+  git ls-tree HEAD "$1" 2>/dev/null | awk '$2 == "commit" { print $3 }'
+}
+DUCKDB_SHA="${DUCKDB_SHA:-$(gitlink_sha duckdb)}"
+CITOOLS_SHA="${CITOOLS_SHA:-$(gitlink_sha extension-ci-tools)}"
+: "${DUCKDB_SHA:=d8cdaa33fda8df955cc76ef58a280f68f4cd43fa}"   # v1.5.5, export fallback
+: "${CITOOLS_SHA:=72e76e99cd7fee45a99739cd118ec2db64e034ec}"  # v1.5-variegata
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m  ok\033[0m %s\n' "$*"; }

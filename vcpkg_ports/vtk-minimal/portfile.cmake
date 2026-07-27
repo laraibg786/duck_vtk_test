@@ -31,6 +31,19 @@
 #    ports/cgal, ports/si and ports/nonstd-bit-lite all do exactly this.
 set(VCPKG_BUILD_TYPE release)
 
+# VTK 9.6.2 (released 2026-05-15) is the newest STABLE release and the third patch
+# of the 9.6 line, i.e. a settled one rather than a .0. It is not an arbitrary tag —
+# the release-cadence evidence and the policy for moving to 9.7 live in
+# cmake/DuckVTKFindVTK.cmake next to DUCK_VTK_MIN_VERSION. Read that before bumping.
+#
+# Note this is NOT vcpkg's official `vtk` port, which is pinned at 9.3.0-pv5.12.1 —
+# a ParaView fork, three minor lines behind. That staleness is one more reason this
+# overlay port exists.
+#
+# When bumping: version here, "version" in vcpkg.json, and the default in
+# scripts/build_minimal_vtk.sh all change together. `make submit-check` compares the
+# module lists between this file and that script but NOT the versions, so a
+# half-finished bump will not be caught for you.
 vcpkg_download_distfile(ARCHIVE
     # vtk.org is the canonical source. A GitHub mirror of the same release is
     # listed second so a vtk.org outage does not break every build.

@@ -40,6 +40,44 @@
 # surface for in-memory reads (SetInputString(const std::string &) rather than
 # SetInputArray, which arrived in 9.6). That is deliberate: it costs nothing and
 # keeps the door open to lowering this floor later.
+#
+# ---------------------------------------------------------------------------
+# WHY 9.6.2 AND NOT SOME OTHER RELEASE — the version policy
+# ---------------------------------------------------------------------------
+# Recorded because "9.6.2" looks like an arbitrary tag picked off a download page,
+# and it is not. Kitware's actual 9.x release history (tag dates from the VTK
+# repository):
+#
+#   v9.4.0  2024-11-22    v9.5.0  2025-06-20    v9.6.0  2026-02-09
+#   v9.4.1  2024-12-26    v9.5.1  2025-08-28    v9.6.1  2026-03-24
+#   v9.4.2  2025-03-27    v9.5.2  2025-09-16    v9.6.2  2026-05-15
+#   v9.7.0.rc0  2026-07-08 … rc3  2026-07-27
+#
+# Read off that table:
+#   * A new MINOR line lands roughly every 7-8 months, with 2-3 patch releases
+#     settling it over the following ~3 months.
+#   * 9.6.2 is the THIRD patch of the current line — i.e. the newest stable
+#     release, and a settled one, not a .0.
+#   * 9.7.0 is in release-candidate as of this writing. Do NOT pin an rc: it is
+#     explicitly not a stable release, and a community extension that ships one
+#     inherits every bug found between rc and final.
+#
+# The alternative worth considering is 9.5.2, the last patch of the previous line
+# and ~8 months more settled. It is deliberately NOT chosen: it has never been
+# built or tested by this project, so switching to it would trade a configuration
+# that is green across every platform in the community pipeline for one that is
+# merely older. Age is not evidence.
+#
+# POLICY when 9.7.0 final ships:
+#   1. Bump vcpkg_ports/vtk-minimal (version, URL, SHA512) and the default in
+#      scripts/build_minimal_vtk.sh. Those two must move together —
+#      `make submit-check` compares the module lists but NOT the versions.
+#   2. Leave this floor at 9.6 unless a 9.7 API is actually needed. The floor and
+#      the pin answer different questions: the pin is what we build and ship, the
+#      floor is what we refuse to build against. Raising the floor in lockstep
+#      with the pin needlessly breaks anyone building against a system VTK.
+#   3. Re-run `make ci-verify` and the full `make check` before trusting it. VTK
+#      minor releases have changed module dependency edges before.
 set(DUCK_VTK_MIN_VERSION 9.6)
 
 # ---------------------------------------------------------------------------
@@ -60,21 +98,47 @@ set(DUCK_VTK_REQUIRED_COMPONENTS
                           # a 'DSO missing from command line' link error.
     IOLegacy              # legacy .vtk readers
     IOXML                 # .vtu/.vtp/.vts/.vtr/.vti and the parallel/multiblock variants
+    FiltersCore           # pulled in transitively by IOLegacy and IOHDF; named
+                          # explicitly so this list and the vcpkg port's
+                          # VTK_MODULE_ENABLE_VTK_* set are literally the same set,
+                          # which is what scripts/submit_check.sh compares.
 )
 
-# Optional components. Phase 4 formats. Requested separately so a VTK build
-# lacking them degrades to "that format is unsupported" rather than failing the
-# whole configure step.
-# NOTE: IOGeometry is deliberately absent. It requires FiltersHybrid ->
-# RenderingCore, so it cannot exist in a rendering-free VTK build; requesting it
-# makes VTK's own configure step fail. See scripts/build_minimal_vtk.sh.
-set(DUCK_VTK_OPTIONAL_COMPONENTS
-    IOEnSight             # EnSight Gold — common in CFD
-    IOExodus              # ExodusII (.ex2) — common in FEA
-    IOCGNS                # CGNS — CFD standard
-    IOHDF                 # VTKHDF
-    FiltersCore           # forced transitively by IOLegacy; see the note below
-)
+# ---------------------------------------------------------------------------
+# There is deliberately NO optional-component probe.
+# ---------------------------------------------------------------------------
+# There used to be one: a DUCK_VTK_OPTIONAL_COMPONENTS list (IOEnSight, IOExodus,
+# IOCGNS, IOHDF) probed one at a time, with a DUCK_VTK_HAVE_<COMP>=1 compile
+# definition emitted for each one found. It was removed, and the reasons are worth
+# keeping so it does not come back by accident:
+#
+#  1. It did nothing. Nothing in src/ ever referenced a DUCK_VTK_HAVE_* macro, and
+#     src/vtk/vtk_dataset.cpp registers no reader for any of those formats. The
+#     only observable effect was linking extra VTK libraries that were never called.
+#
+#  2. `IOCGNS` is not a VTK component. The module is VTK::IOCGNSReader (see
+#     VTK's IO/CGNS/vtk.module). So that probe could never succeed and had been
+#     silently failing for its whole existence — the exact failure mode a probe
+#     that "degrades gracefully" is guaranteed to hide.
+#
+#  3. It made the build environment-dependent in a way nothing tested. Against the
+#     vtk-minimal vcpkg port none of those modules exist, so nothing linked.
+#     Against a distro or Homebrew VTK they all exist, so four extra libraries
+#     linked and four extra macros were defined. Same source, same command, two
+#     different binaries depending on which VTK happened to be installed. For a
+#     project whose whole dependency argument is "eliminate the ABI/config variable
+#     rather than test for it", that is the wrong default.
+#
+# The right shape when one of these formats is actually implemented: add the
+# component to DUCK_VTK_REQUIRED_COMPONENTS above AND enable it in
+# vcpkg_ports/vtk-minimal/portfile.cmake. submit_check.sh already fails if those two
+# disagree, so support becomes a declared, verified fact instead of a property of
+# the build machine. docs/ROADMAP.md records the per-format cost of doing that.
+#
+# NOTE while reading that roadmap: IOGeometry (OBJ/STL/OpenFOAM) cannot simply be
+# added. It PRIVATE_DEPENDS on VTK::RenderingCore, so VTK's own configure step fails
+# for it in a rendering-free build. That is a real upstream constraint, not a flag we
+# are missing.
 
 # ---------------------------------------------------------------------------
 # Locate a VTK config directory if the user did not specify one
@@ -145,20 +209,14 @@ if(NOT VTK_FOUND)
     "  make release EXT_FLAGS='-DVTK_DIR=/path/to/lib/cmake/vtk-9.6'\n")
 endif()
 
-# Probe the optional components one at a time. find_package with a failing
-# component in the main call would abort even though these are non-essential.
-set(DUCK_VTK_ENABLED_OPTIONAL "")
-foreach(_comp ${DUCK_VTK_OPTIONAL_COMPONENTS})
-  find_package(VTK ${DUCK_VTK_MIN_VERSION} QUIET COMPONENTS ${_comp})
-  if(TARGET VTK::${_comp})
-    list(APPEND DUCK_VTK_ENABLED_OPTIONAL ${_comp})
-  endif()
-endforeach()
-
-# Re-run the find with the full resolved set so VTK_LIBRARIES contains
-# everything we intend to link and hand to vtk_module_autoinit.
+# Re-run the find as REQUIRED so VTK_LIBRARIES is populated with exactly the set we
+# intend to link and hand to vtk_module_autoinit.
+#
+# One set, not "required plus whatever else happened to be installed": the module
+# set the extension links must be a property of this file and the vcpkg port, never
+# of the build machine. See the note above the component list.
 find_package(VTK ${DUCK_VTK_MIN_VERSION} REQUIRED
-  COMPONENTS ${DUCK_VTK_REQUIRED_COMPONENTS} ${DUCK_VTK_ENABLED_OPTIONAL})
+  COMPONENTS ${DUCK_VTK_REQUIRED_COMPONENTS})
 
 # ---------------------------------------------------------------------------
 # Derive the library directory for RPATH purposes
@@ -184,11 +242,4 @@ message(STATUS "duck_vtk: VTK_VERSION            = ${VTK_VERSION}")
 message(STATUS "duck_vtk: VTK_DIR                = ${VTK_DIR}")
 message(STATUS "duck_vtk: VTK library dir        = ${DUCK_VTK_LIBRARY_DIR}")
 message(STATUS "duck_vtk: required components    = ${DUCK_VTK_REQUIRED_COMPONENTS}")
-message(STATUS "duck_vtk: optional components on = ${DUCK_VTK_ENABLED_OPTIONAL}")
-
-# Record which optional formats are available so the C++ can #ifdef the reader
-# factory entries and report honestly in vtk_info / error messages.
-foreach(_comp ${DUCK_VTK_ENABLED_OPTIONAL})
-  string(TOUPPER "${_comp}" _comp_uc)
-  add_compile_definitions(DUCK_VTK_HAVE_${_comp_uc}=1)
-endforeach()
+message(STATUS "duck_vtk: linked VTK modules     = ${VTK_LIBRARIES}")

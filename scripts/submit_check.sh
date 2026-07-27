@@ -16,7 +16,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 DESC="community-extension/description.yml"
-CI=".github/workflows/ci.yml"
+# The distribution pipeline, NOT ci.yml. Those were one file until the two were
+# split: ci.yml now holds only project-owned checks and calls nothing from
+# extension-ci-tools, while this file mirrors duckdb/extension-template and is
+# the only place exclude_archs appears.
+CI=".github/workflows/MainDistributionPipeline.yml"
 
 fails=0
 warns=0
@@ -96,10 +100,12 @@ import sys, yaml
 DEFAULT_LINE = "v1.5.5"
 with open(sys.argv[1]) as fh:
     wf = yaml.safe_load(fh)
-entries = wf["jobs"]["distribution"]["strategy"]["matrix"]["include"]
-for e in entries:
-    if e.get("duckdb_version") == DEFAULT_LINE:
-        print("\n".join(sorted(set(e["exclude_archs"].split(";")))))
+# One top-level job per DuckDB line, NOT a matrix. A matrix cannot drive `uses:`,
+# and trying to express both lines as one made the run fail with no failing job.
+for job in wf["jobs"].values():
+    w = job.get("with") or {}
+    if w.get("duckdb_version") == DEFAULT_LINE:
+        print("\n".join(sorted(set(w["exclude_archs"].split(";")))))
         break
 PY
 )
@@ -114,18 +120,63 @@ elif [[ "$desc_ex" == "$ci_default_ex" ]]; then
 import sys, yaml
 with open(sys.argv[1]) as fh:
     wf = yaml.safe_load(fh)
-base = None
-for e in wf["jobs"]["distribution"]["strategy"]["matrix"]["include"]:
-    if e.get("duckdb_version") == "v1.5.5":
-        base = set(e["exclude_archs"].split(";"))
-for e in wf["jobs"]["distribution"]["strategy"]["matrix"]["include"]:
-    extra = set(e["exclude_archs"].split(";")) - (base or set())
+jobs = [(n, j.get("with") or {}) for n, j in wf["jobs"].items()]
+base = next((set(w["exclude_archs"].split(";"))
+             for _, w in jobs if w.get("duckdb_version") == "v1.5.5"), set())
+for name, w in jobs:
+    if not w.get("exclude_archs"):
+        continue
+    extra = set(w["exclude_archs"].split(";")) - base
     if extra:
-        print(f"       note: {e['duckdb_version']} also excludes {';'.join(sorted(extra))}")
+        print(f"       note: {w['duckdb_version']} also excludes {';'.join(sorted(extra))}")
 PY
 else
   bad "excluded_platforms and the default line's exclude_archs differ:"
   diff <(echo "$desc_ex") <(echo "$ci_default_ex") | sed 's/^/       /'
+fi
+
+step "Reusable-workflow @ref matches ci_tools_version in every job"
+# THE regression guard for the bug that made CI red with no failing job.
+#
+# `uses:` is resolved before matrix expansion, so the reusable workflow's @ref and
+# the ci_tools_version input it is handed must name the same release. They did not:
+# ci_tools_version v1.4-andium was passed to _extension_distribution.yml@v1.5-variegata.
+# v1.5's macos job reads `runs-on: ${{ matrix.runner }}` while v1.4-andium's matrix
+# JSON has no `runner` key, so `runs-on` came out empty, GitHub refused to create
+# the job, and the RUN failed while every individual job reported success/skipped.
+#
+# Cheap to check, near-impossible to spot by eye, and expensive to rediscover.
+if [[ -z "$YAML_PY" ]]; then
+  warn "no YAML parser available; skipped the @ref / ci_tools_version check"
+else
+  ref_out=$(${YAML_PY} - "$CI" <<'PY' 2>/dev/null
+import sys, yaml
+with open(sys.argv[1]) as fh:
+    wf = yaml.safe_load(fh)
+bad = 0
+for name, job in wf["jobs"].items():
+    uses = job.get("uses")
+    if not uses or "_extension_distribution.yml" not in uses:
+        continue
+    ref = uses.split("@")[-1]
+    ct = (job.get("with") or {}).get("ci_tools_version")
+    if ref != ct:
+        print(f"MISMATCH {name}: uses @{ref} but ci_tools_version={ct}")
+        bad = 1
+    else:
+        print(f"OK {name}: @{ref}")
+sys.exit(bad)
+PY
+  )
+  rc=$?
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    case "$line" in
+      OK*)       ok "${line#OK }" ;;
+      MISMATCH*) bad "${line#MISMATCH }" ;;
+    esac
+  done <<<"$ref_out"
+  (( rc )) && bad "a reusable-workflow @ref disagrees with its ci_tools_version input"
 fi
 
 step "vcpkg manifest and overlay port"
@@ -173,6 +224,28 @@ if [[ "$port_mods" == "$script_mods" ]]; then
 else
   bad "module lists differ between the vcpkg port and build_minimal_vtk.sh:"
   diff <(echo "$port_mods") <(echo "$script_mods") | sed 's/^/       /'
+fi
+
+step "VTK version agrees across the port, its manifest and the build script"
+# A bump touches three files. Miss one and the failure is confusing: the vcpkg port
+# builds version X while the local script installs Y, so a local build and their CI
+# link different VTKs and only one of them is the version anybody tested.
+port_ver=$(grep -oP '"version":\s*"\K[^"]+' vcpkg_ports/vtk-minimal/vcpkg.json)
+tarball_ver=$(grep -oP 'VTK-\K[0-9]+\.[0-9]+\.[0-9]+(?=\.tar\.gz)' \
+              vcpkg_ports/vtk-minimal/portfile.cmake | sort -u)
+script_ver=$(grep -oP 'VTK_VERSION="\$\{1:-\K[0-9.]+' scripts/build_minimal_vtk.sh)
+if [[ -z "$port_ver" || -z "$tarball_ver" || -z "$script_ver" ]]; then
+  warn "could not read one of the VTK versions (port=$port_ver tarball=$tarball_ver script=$script_ver)"
+elif [[ "$port_ver" == "$tarball_ver" && "$port_ver" == "$script_ver" ]]; then
+  ok "VTK $port_ver in vcpkg.json, portfile tarball and build_minimal_vtk.sh"
+else
+  bad "VTK versions disagree: vcpkg.json=$port_ver portfile=$tarball_ver build_minimal_vtk.sh=$script_ver"
+fi
+# An rc must never be pinned for a release build.
+if [[ "$port_ver" == *rc* || "$tarball_ver" == *rc* ]]; then
+  bad "the VTK pin is a release candidate ($port_ver / $tarball_ver); ship a stable release"
+else
+  ok "the VTK pin is a stable release, not an rc"
 fi
 
 step "Submodule pin is recorded"

@@ -1,0 +1,104 @@
+#
+# The DuckDB community-extensions distribution pipeline.
+#
+# This file exists to mirror duckdb/extension-template as closely as possible, so
+# that a green run here means a green build in community-extensions. It contains
+# NOTHING project-specific: no VTK, no test corpus, no Docker. Project-owned
+# checks live in ci.yml, which never calls extension-ci-tools.
+#
+# ---------------------------------------------------------------------------
+# WHY TWO SEPARATE JOBS RATHER THAN ONE MATRIX
+# ---------------------------------------------------------------------------
+# A matrix cannot drive `uses:` — GitHub resolves reusable-workflow references
+# before matrix expansion. An earlier version of this pipeline tried to express
+# both DuckDB lines as a matrix over `ci_tools_version` while keeping a single
+# `uses: ...@v1.5-variegata`, and it was silently broken:
+#
+#   * v1.5-variegata's macos job does `runs-on: ${{ matrix.runner }}`, and its
+#     config/distribution_matrix.json supplies `runner: macos-15`.
+#   * v1.4-andium's macos job hardcodes `runs-on: macos-latest`, and its matrix
+#     JSON has NO `runner` key at all.
+#
+# Feeding v1.4-andium's config into v1.5-variegata's workflow therefore produced
+# an empty `runs-on`, GitHub refused to create the job, and the whole run failed
+# with NO failing job to point at — every job showed success or skipped while the
+# run itself was red. That is an expensive failure to diagnose; do not reintroduce
+# it by "simplifying" these two jobs back into a matrix.
+#
+# The rule: the `@ref` and the `ci_tools_version` input must always name the same
+# release. A survey of all 293 listed community extensions found 6 that build the
+# LTS line in their own CI, and all 6 pin `@v1.4-andium` for it. None uses a
+# matrix here.
+#
+name: Main Extension Distribution Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The DEFAULT line. This is the only line community-extensions builds for a
+  # submission PR (their build_andium.yml and build_next.yml are both `if: false`),
+  # so this job's exclude_archs is the submission-relevant one and MUST stay
+  # identical to excluded_platforms in community-extension/description.yml.
+  # scripts/submit_check.sh enforces that.
+  # ---------------------------------------------------------------------------
+  duckdb-latest-build:
+    name: Build extension binaries (DuckDB v1.5.5)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
+    with:
+      extension_name: vtk
+      duckdb_version: v1.5.5
+      ci_tools_version: v1.5-variegata
+      # Pinned rather than left to default. community-extensions' own build.yml
+      # pins this same commit for the v1.5.5 line; matching it means our CI and
+      # their CI resolve the identical vcpkg tree, including for our vtk-minimal
+      # overlay port.
+      vcpkg_commit: 84bab45d415d22042bd0b9081aea57f362da3f35
+      # wasm_*            : VTK does not build under Emscripten. Permanent.
+      # linux_*_musl      : opt_in in the v1.5 matrix, so excluding is a no-op
+      #                     here; named anyway so this list and the LTS list stay
+      #                     comparable, and because the descriptor must name it
+      #                     for the LTS line (see below).
+      # windows_amd64_mingw: DuckDB's OWN tools/sqlite3_api_wrapper fails to
+      #                     compile under rtools42 mingw (ambiguous `byte` from
+      #                     objidl.h). Not our code. h5db and the core iceberg
+      #                     extension exclude it for the same reason.
+      exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw"
+
+  # ---------------------------------------------------------------------------
+  # The Andium/LTS line.
+  #
+  # Not built by community-extensions for a submission, so this is our own
+  # early-warning signal that the DuckDB 1.4 code path still compiles and links
+  # across platforms. The descriptor's `repo.andium` key is what actually selects
+  # a ref for this line once the extension is listed.
+  # ---------------------------------------------------------------------------
+  duckdb-lts-build:
+    name: Build extension binaries (DuckDB LTS v1.4.5)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4-andium
+    with:
+      extension_name: vtk
+      duckdb_version: v1.4.5
+      ci_tools_version: v1.4-andium
+      vcpkg_commit: ce613c41372b23b1f51333815feb3edd87ef8a8b
+      # Two differences from the default line, both forced by upstream:
+      #
+      #  linux_amd64_musl — marked opt_in:false in v1.4-andium's matrix (it is
+      #    opt_in:true in v1.5-variegata), so the LTS line builds it unless it is
+      #    named here. Relying on the opt-in default is correct ONLY for v1.5.
+      #
+      #  windows_amd64 — DuckDB v1.4.5's own sqlite3_api_wrapper.cpp does not
+      #    compile under current MSVC + Windows SDK 10.0.26100 (C2872: 'byte':
+      #    ambiguous symbol). Fixed upstream on the v1.5 line. Our extension is
+      #    not implicated: vtk_extension.lib links successfully immediately
+      #    before DuckDB's tool fails. Excluding it keeps this job honestly green
+      #    rather than permanently red for someone else's bug.
+      exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw;windows_amd64"
