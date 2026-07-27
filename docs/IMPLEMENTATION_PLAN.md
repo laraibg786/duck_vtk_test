@@ -270,7 +270,7 @@ Build L4 on Phase 2's functions. Follow research doc 02's skeleton, checked agai
 
 ### Phase 4 — Tests, docs, CI — ✅ **DONE**
 
-> 14 sqllogictest files / 348 assertions (measured), invariant runner, oracle harness, Python
+> 14 sqllogictest files / 349 assertions (measured), invariant runner, oracle harness, Python
 > client smoke test, README, LICENSE, and a CI matrix over DuckDB 1.5.4 + 1.4.5 LTS
 > + clang.
 

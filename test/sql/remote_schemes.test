@@ -72,22 +72,39 @@ local
 # Build directories are two levels below the repo root — build/release, build/debug —
 # so ../.. reaches the tree containing test/data. getenv() is deliberately not used:
 # it lives in the core_functions extension and is not loaded in this test binary.
+#
+# EXACTLY THREE SLASHES, and the leading slash of the path stripped. This is the one
+# form that is correct on both platforms, which is not obvious — DuckDB's
+# GetFileUrlOffset() (duckdb/src/common/file_system.cpp) returns a different offset
+# per platform for the same string:
+#
+#   POSIX  "file:///work/x"  -> offset 7 -> "/work/x"   (leading slash KEPT)
+#   WIN32  "file:///D:/x"    -> offset 8 -> "D:/x"      (leading slash DROPPED)
+#
+# __BUILD_DIRECTORY__ is "/home/…/build/release" on Linux but "D:/a/…/build/release"
+# on Windows, so concatenating it after "file://" gives three slashes on Linux and
+# only two on Windows — and "file://D:/…" hits GetFileUrlOffset's "unknown file:/ url
+# format" branch, which strips nothing and fails. ltrim() normalises both to three.
+statement ok
+CREATE MACRO file_url(rel) AS
+    'file:///' || ltrim(replace('__BUILD_DIRECTORY__', '\', '/'), '/') || '/../../' || rel;
+
 query II
 SELECT num_points, num_cells
-FROM vtk_info('file://__BUILD_DIRECTORY__/../../test/data/legacy/uGridEx.vtk');
+FROM vtk_info(file_url('test/data/legacy/uGridEx.vtk'));
 ----
 27	12
 
 # The scheme is reported, and the reader is the in-memory variant — which is what
 # proves the bytes came through the VFS rather than being handed to VTK as a path.
 query I
-SELECT source_kind FROM vtk_info('file://__BUILD_DIRECTORY__/../../test/data/legacy/uGridEx.vtk');
+SELECT source_kind FROM vtk_info(file_url('test/data/legacy/uGridEx.vtk'));
 ----
 file
 
 query I
 SELECT reader_class LIKE '%(in-memory)%'
-FROM vtk_info('file://__BUILD_DIRECTORY__/../../test/data/legacy/uGridEx.vtk');
+FROM vtk_info(file_url('test/data/legacy/uGridEx.vtk'));
 ----
 true
 
@@ -95,14 +112,14 @@ true
 # stat a URL and silently returned 0 for every remote read; the size now comes from
 # the bytes actually received.
 query I
-SELECT file_size_bytes FROM vtk_info('file://__BUILD_DIRECTORY__/../../test/data/legacy/uGridEx.vtk');
+SELECT file_size_bytes FROM vtk_info(file_url('test/data/legacy/uGridEx.vtk'));
 ----
 1012
 
 # And the values must be identical to reading the same file as a plain path.
 query IIIII
 SELECT point_id, x, y, z, scalars
-FROM vtk_points('file://__BUILD_DIRECTORY__/../../test/data/legacy/uGridEx.vtk')
+FROM vtk_points(file_url('test/data/legacy/uGridEx.vtk'))
 ORDER BY point_id LIMIT 2;
 ----
 0	0.0	0.0	0.0	0.0

@@ -231,7 +231,7 @@ duck_vtk is ready for both the moment either works — `sftp://` and `sshfs://` 
 ## Testing
 
 ```bash
-make test            # sqllogictest — 14 files, 348 assertions
+make test            # sqllogictest — 14 files, 349 assertions
 make invariants      # 15 properties × every corpus file
 make oracle          # elementwise diff against an independent Python VTK
 make smoke           # build + load, including into the SYSTEM duckdb
@@ -240,10 +240,10 @@ make check           # everything
 make check-api-compat EXTRA_DUCKDB_SRC=/tmp/duckdb-1.4.5   # version shim, in seconds
 ```
 
-Verified on **DuckDB 1.5.5 and 1.4.5 (LTS)**: 348 sqllogictest assertions across 14
+Verified on **DuckDB 1.5.5 and 1.4.5 (LTS)**: 349 sqllogictest assertions across 14
 files, and 15 invariants over 66 corpus files (2 skipped), pass on both. Re-running
 the SQL suite through the in-memory parse path used for remote reads
-(`make test-memory-reads`) yields 824 assertions and must agree elementwise. Building against LTS is what caught a
+(`make test-memory-reads`) yields 826 assertions and must agree elementwise. Building against LTS is what caught a
 `CREATE INDEX` crash that 1.5.x masks — see the `BindCreateIndex` override.
 
 Correctness is established against **independent ground truth**, never against the extension itself: a Python VTK build that shares no code with the C++ one, plus hand-derived values for three ASCII fixtures (see `docs/research/04-test-data-corpus.md` §4). The 82-file corpus is committed with a checksum manifest (`test/data/MANIFEST.sha256`, verified by `make data`).
