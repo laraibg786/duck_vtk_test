@@ -117,7 +117,16 @@ jobs:
       - name: Build minimal VTK (no-op on cache hit) and export VTK_DIR
         run: |
           set -euo pipefail
-          vtk_dir=$(./scripts/build_minimal_vtk.sh)
+          # `tail -n1` is belt-and-braces. The script's contract is one stdout line,
+          # but anything that leaks a stray line here writes a MULTI-LINE value into
+          # $GITHUB_ENV, which fails the step with the thoroughly unhelpful
+          #   Unable to process file command 'env' successfully.
+          #   Invalid format '-- The CXX compiler identification is GNU 14.2.0'
+          # That is a real failure this job hit: cmake writes progress to stdout, and
+          # only the cache-MISS path reaches cmake, so it could not reproduce locally
+          # against a warm cache.
+          vtk_dir=$(./scripts/build_minimal_vtk.sh | tail -n1)
+          [ -d "$vtk_dir" ] || { echo "::error::build_minimal_vtk.sh did not yield a directory: $vtk_dir"; exit 1; }
           echo "VTK_DIR=$vtk_dir" >> "$GITHUB_ENV"
 
       # Keyed on run_id rather than sha so the entry is unique per run (a cache key

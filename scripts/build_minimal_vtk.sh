@@ -95,6 +95,12 @@ if [[ -z "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ]] && command -v ccache >/dev/null 2
   info "using ccache for the VTK build"
 fi
 
+# >&2 on every cmake invocation below. cmake writes progress to STDOUT, and this
+# script's stdout is reserved for the single config-dir line. Missing this meant a
+# CACHE MISS in CI piped "-- The CXX compiler identification is GNU 14.2.0" into
+# $GITHUB_ENV and failed the step with "Unable to process file command 'env'".
+# The cache-HIT path returns early and never reaches here, which is exactly why it
+# was not caught locally.
 cmake -S "VTK-$VTK_VERSION" -B build -G Ninja \
   $CCACHE_ARG \
   -DCMAKE_BUILD_TYPE=Release \
@@ -120,7 +126,7 @@ cmake -S "VTK-$VTK_VERSION" -B build -G Ninja \
   -DVTK_MODULE_ENABLE_VTK_CommonMisc=YES \
   -DVTK_MODULE_ENABLE_VTK_IOLegacy=YES \
   -DVTK_MODULE_ENABLE_VTK_IOXML=YES \
-  -DVTK_MODULE_ENABLE_VTK_FiltersCore=YES
+  -DVTK_MODULE_ENABLE_VTK_FiltersCore=YES >&2
 # Deliberately NOT enabled:
 #   VTK_MODULE_ENABLE_VTK_IOParallelXML=YES — writers only, and we are read-only.
 #   VTK_MODULE_ENABLE_VTK_IOGeometry=YES
@@ -139,10 +145,10 @@ cmake -S "VTK-$VTK_VERSION" -B build -G Ninja \
 #     "that format is unsupported" rather than breaking the build.
 
 info "Building with $JOBS jobs"
-cmake --build build --parallel "$JOBS"
+cmake --build build --parallel "$JOBS" >&2
 
 info "Installing to $PREFIX"
-cmake --install build
+cmake --install build >&2
 
 CFG_DIR="$(ls -d "$PREFIX"/lib/cmake/vtk-* 2>/dev/null | head -1 || true)"
 if [[ -z "$CFG_DIR" ]]; then
