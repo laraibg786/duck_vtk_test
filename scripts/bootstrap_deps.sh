@@ -117,10 +117,26 @@ bootstrap() {
   if [[ $mirror_in_use -eq 0 ]] && [[ -f .gitmodules ]] && git rev-parse --git-dir >/dev/null 2>&1; then
     info "bootstrapping $dir via git submodule (shallow)"
     if git submodule update --init --depth 1 -- "$dir" >&2 2>/dev/null && [[ -e "$marker" ]]; then
-      ok "$dir at $(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
-      return 0
+      # The requested SHA is authoritative, NOT the gitlink.
+      #
+      # `git submodule update` checks out whatever the gitlink records, which is
+      # correct when $sha was derived from that same gitlink — but wrong whenever the
+      # caller asked for something else. .github/workflows/ci.yml's `quick` matrix
+      # sets DUCKDB_SHA/CITOOLS_SHA per row precisely so the LTS row builds against
+      # DuckDB v1.4.5; without this check that request was silently discarded and
+      # BOTH rows built the gitlink's version, while still stamping the artefact with
+      # the matrix's DUCKDB_VERSION_TAG. The job passed, having tested the wrong
+      # thing — the LTS compatibility it exists to prove was never exercised.
+      local have
+      have="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo '')"
+      if [[ -z "$sha" || "$have" == "$sha" ]]; then
+        ok "$dir at $(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
+        return 0
+      fi
+      info "$dir gitlink is ${have:0:10} but ${sha:0:10} was requested; fetching that instead"
+    else
+      info "submodule update did not produce $marker; falling back to a direct fetch"
     fi
-    info "submodule update did not produce $marker; falling back to a direct fetch"
   fi
 
   # Fallback: a plain shallow fetch of the pinned commit. Covers a tarball export,
