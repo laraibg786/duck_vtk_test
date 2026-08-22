@@ -38,6 +38,12 @@ info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m  ok\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Logs go in one mktemp directory rather than fixed /tmp names. This script runs on
+# developer workstations, where a predictable "$_LOGDIR/vtk.log" is a symlink-attack
+# target, and two concurrent runs would clobber each other's logs.
+_LOGDIR="$(mktemp -d)"
+trap 'rm -rf "$_LOGDIR"' EXIT
+
 # NOTE: this script used to PREPEND /home/linuxbrew/.linuxbrew/bin to PATH. That
 # silently decided which cmake, ninja, curl, git and duckdb ran on any machine with
 # Linuxbrew installed, overriding the system toolchain. If you want a Homebrew
@@ -64,8 +70,8 @@ ok "vcpkg at $(git -C "$VCPKG_ROOT" rev-parse --short HEAD)"
 
 if [[ ! -x "$VCPKG_ROOT/vcpkg" ]]; then
   info "bootstrapping vcpkg"
-  "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics >/tmp/vcpkg_bootstrap.log 2>&1 \
-    || { tail -20 /tmp/vcpkg_bootstrap.log; die "vcpkg bootstrap failed"; }
+  "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics >"$_LOGDIR/bootstrap.log" 2>&1 \
+    || { tail -20 "$_LOGDIR/bootstrap.log"; die "vcpkg bootstrap failed"; }
 fi
 ok "vcpkg binary ready"
 
@@ -78,8 +84,8 @@ info "2/4  build the vtk-minimal overlay port on its own"
   --overlay-ports=./vcpkg_ports \
   --overlay-triplets=./extension-ci-tools/toolchains \
   --x-install-root="$VCPKG_ROOT/installed" \
-  >/tmp/vcpkg_vtk.log 2>&1 \
-  || { echo "--- last 60 lines ---"; tail -60 /tmp/vcpkg_vtk.log; die "vtk-minimal failed to build under vcpkg"; }
+  >"$_LOGDIR/vtk.log" 2>&1 \
+  || { echo "--- last 60 lines ---"; tail -60 "$_LOGDIR/vtk.log"; die "vtk-minimal failed to build under vcpkg"; }
 ok "vtk-minimal built"
 
 inst="$VCPKG_ROOT/installed/${TRIPLET}"
@@ -103,9 +109,9 @@ export VCPKG_TARGET_TRIPLET="$TRIPLET"
 # Unset VTK_DIR so the build MUST resolve VTK through vcpkg. Leaving it set would
 # make this check silently pass against the locally built VTK instead.
 unset VTK_DIR
-make release >/tmp/vcpkg_ext.log 2>&1 \
-  || { echo "--- last 60 lines ---"; tail -60 /tmp/vcpkg_ext.log; die "extension build under vcpkg failed"; }
-grep -E "duck_vtk: (vcpkg detected|VTK_VERSION|VTK_DIR)" /tmp/vcpkg_ext.log || true
+make release >"$_LOGDIR/ext.log" 2>&1 \
+  || { echo "--- last 60 lines ---"; tail -60 "$_LOGDIR/ext.log"; die "extension build under vcpkg failed"; }
+grep -E "duck_vtk: (vcpkg detected|VTK_VERSION|VTK_DIR)" "$_LOGDIR/ext.log" || true
 ok "extension built against the vcpkg-provided VTK"
 
 # ---------------------------------------------------------------------------

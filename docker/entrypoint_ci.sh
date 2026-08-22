@@ -57,8 +57,11 @@ stage "1. Clone the repository (not a copy of the working tree)"
 # does not exist in this container and git refuses to touch it ("detected dubious
 # ownership"). Marking just the mount read-safe is the narrow fix; the container is
 # ephemeral and the mount is read-only.
-git config --global --add safe.directory "${REPO_URL:-/src}" 2>/dev/null || true
-git config --global --add safe.directory "${REPO_URL:-/src}/.git" 2>/dev/null || true
+# One rule covers every case: the bind-mounted source, its .git, and later the
+# mirror gitdirs. There used to be four narrowly-scoped calls AND this wildcard,
+# which made the narrow ones dead code while the comment still described them as
+# "the narrow fix". The container is ephemeral and its mounts are read-only.
+git config --global --add safe.directory '*' 2>/dev/null || true
 rm -rf /work/duck_vtk
 git clone --quiet "${REPO_URL:-/src}" /work/duck_vtk || die "clone failed"
 cd /work/duck_vtk
@@ -90,16 +93,9 @@ stage "3. Build (bootstrap must obtain duckdb + ci-tools by itself)"
 # no longer exercises the network fetch — the build and tests are still fully cold.
 if [[ -n "${DUCKDB_GIT_MIRROR:-}" ]]; then
   echo "duckdb source   : local mirror ${DUCKDB_GIT_MIRROR} (network fetch NOT exercised)"
-  # The mirror is a bare-style git directory, so mark it (not a .git child) safe.
-  git config --global --add safe.directory "${DUCKDB_GIT_MIRROR}" 2>/dev/null || true
 else
   echo "duckdb source   : github (full network fetch, ~500 MB)"
 fi
-if [[ -n "${CITOOLS_GIT_MIRROR:-}" ]]; then
-  git config --global --add safe.directory "${CITOOLS_GIT_MIRROR}" 2>/dev/null || true
-fi
-# A bind-mounted git directory carries the host's UID, which git refuses to read.
-git config --global --add safe.directory '*' 2>/dev/null || true
 export DUCKDB_GIT_MIRROR CITOOLS_GIT_MIRROR DUCKDB_SHA CITOOLS_SHA
 # No `make configure` on purpose: `make release` alone has to work, because that is
 # all the community-extensions CI runs.
