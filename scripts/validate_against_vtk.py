@@ -37,7 +37,7 @@ from pathlib import Path
 
 try:
     import vtk
-    from vtk.util.numpy_support import vtk_to_numpy  # noqa: F401  (availability check)
+    from vtk.util.numpy_support import vtk_to_numpy
 except ImportError:
     sys.exit(
         "FATAL: python 'vtk' not importable.\n"
@@ -67,7 +67,16 @@ SKIP_SUFFIXES = {
 # same behaviour documented in docs/PHASE0_RESULTS.md §4), so the oracle cannot be
 # used to judge them. duck_vtk is deliberately STRICTER than raw VTK here.
 # test/sql/attach_errors.test asserts the rejections instead.
-EXPECT_ERROR = {"truncated.vtk", "not_really.vtk", "bad_type.vtu", "bad_ascii_nan.vtk"}
+EXPECT_ERROR = {
+    "truncated.vtk",
+    "not_really.vtk",
+    "bad_type.vtu",
+    "bad_ascii_nan.vtk",
+    # Added late: this fixture was registered in run_invariants.sh and MANIFEST.sha256
+    # but not here, so `make oracle` failed on it from the day it landed. Nothing
+    # noticed, because no CI job runs the oracle.
+    "bad_xml_junk.vtu",
+}
 
 
 @dataclass
@@ -171,10 +180,33 @@ def oracle_arrays(ds, association: str):
         ntup = arr.GetNumberOfTuples()
         vals = []
         if isinstance(arr, vtk.vtkStringArray):
-            vals = [[arr.GetValue(t)] for t in range(arr.GetNumberOfValues())]
+            # vtkStringArray indexes by VALUE, so tuple t component c is value
+            # t*ncomp + c. Flattening one value per row (the previous behaviour)
+            # contradicted the ncomp reported alongside it, which made any
+            # multi-component string array impossible to compare correctly.
+            nvals = arr.GetNumberOfValues()
+            ntuples = nvals // ncomp if ncomp else 0
+            vals = [[arr.GetValue(t * ncomp + c) for c in range(ncomp)]
+                    for t in range(ntuples)]
         else:
-            for t in range(ntup):
-                vals.append([arr.GetComponent(t, c) for c in range(ncomp)])
+            # Integer arrays must be read EXACTLY. arr.GetComponent() returns a
+            # double, so anything above 2^53 is silently rounded on the oracle side —
+            # 9007199254740993 comes back as 9007199254740992.0. That is precisely
+            # what test/data/synthetic/int64_precision.vtu exists to catch, and this
+            # harness could not catch it: the old comparison coerced BOTH sides
+            # through float(), so the extension's exact value was rounded to match the
+            # oracle's rounded one and the check passed vacuously.
+            np_arr = None
+            try:
+                np_arr = vtk_to_numpy(arr)
+            except Exception:  # noqa: BLE001  (not a vtkDataArray, or unsupported type)
+                np_arr = None
+            if np_arr is not None and np_arr.dtype.kind in "iu":
+                flat = np_arr.reshape(ntup, ncomp)
+                vals = [[int(x) for x in row] for row in flat]
+            else:
+                for t in range(ntup):
+                    vals.append([arr.GetComponent(t, c) for c in range(ncomp)])
         result[name] = {"ncomp": ncomp, "dtype": arr.GetDataType(), "values": vals}
     return result
 
@@ -264,6 +296,24 @@ def floats_equal(a, b, float32: bool = False) -> bool:
     return fa == fb
 
 
+def values_equal(got, exp, is_f32: bool) -> bool:
+    """Exact for strings, tolerance-aware for floats.
+
+    floats_equal() coerces through float(), so a string array compared with it either
+    raised or silently compared as NaN. String arrays are compared verbatim.
+    """
+    if isinstance(exp, int) and not isinstance(exp, bool):
+        # Exact. DuckDB's JSON output renders a 64-bit integer beyond JSON's safe
+        # range as a quoted string, so parse rather than compare representations.
+        try:
+            return int(str(got)) == exp
+        except (TypeError, ValueError):
+            return False
+    if isinstance(exp, str) or isinstance(got, str):
+        return got == exp
+    return floats_equal(got, exp, is_f32)
+
+
 def compare_file(path: Path, duckdb_bin: str, ext: str, max_diffs: int) -> Result:
     rel = str(path)
     if path.name in EXPECT_ERROR:
@@ -344,11 +394,28 @@ def compare_file(path: Path, duckdb_bin: str, ext: str, max_diffs: int) -> Resul
         for name, meta in expected.items():
             column = name_map.get((assoc, name), name)
             quoted = column.replace('"', '""')
+            is_string = bool(meta["values"]) and isinstance(meta["values"][0][0], str)
             try:
-                rows = duck_json(
-                    duckdb_bin, ext,
-                    f'SELECT {key}, "{quoted}" AS v FROM {table}(\'{posix}\') ORDER BY {key};',
-                )
+                if is_string and meta["ncomp"] > 1:
+                    # DuckDB's `.mode json` renders a VARCHAR[] as [alpha, beta] —
+                    # the elements are NOT quoted, so the output is not valid JSON and
+                    # json.loads rejects it. Expanding the list into one row per
+                    # component emits each value as a proper JSON string instead.
+                    expanded = duck_json(
+                        duckdb_bin, ext,
+                        f'SELECT {key} AS k, t.i AS c, "{quoted}"[t.i] AS v '
+                        f'FROM {table}(\'{posix}\'), generate_series(1,{meta["ncomp"]}) AS t(i) '
+                        f'ORDER BY k, c;',
+                    )
+                    grouped: dict = {}
+                    for r in expanded:
+                        grouped.setdefault(r["k"], []).append(r["v"])
+                    rows = [{"v": grouped[k]} for k in sorted(grouped)]
+                else:
+                    rows = duck_json(
+                        duckdb_bin, ext,
+                        f'SELECT {key}, "{quoted}" AS v FROM {table}(\'{posix}\') ORDER BY {key};',
+                    )
             except Exception as exc:  # noqa: BLE001
                 diffs.append(f"{assoc} array {name!r} (column {column!r}): query failed: {exc}")
                 continue
@@ -361,7 +428,7 @@ def compare_file(path: Path, duckdb_bin: str, ext: str, max_diffs: int) -> Resul
                     # ncomp==1 must be a scalar column, never a 1-element list.
                     if isinstance(got_v, list):
                         diffs.append(f"{assoc} {name}[{t}]: got list {got_v!r}, expected scalar")
-                    elif not floats_equal(got_v, exp_v[0], is_f32):
+                    elif not values_equal(got_v, exp_v[0], is_f32):
                         diffs.append(f"{assoc} {name}[{t}]: got {got_v!r} expected {exp_v[0]!r}")
                 else:
                     if not isinstance(got_v, list):
@@ -370,7 +437,7 @@ def compare_file(path: Path, duckdb_bin: str, ext: str, max_diffs: int) -> Resul
                         diffs.append(f"{assoc} {name}[{t}]: got {len(got_v)} components expected {meta['ncomp']}")
                     else:
                         for c, (g, e) in enumerate(zip(got_v, exp_v)):
-                            if not floats_equal(g, e, is_f32):
+                            if not values_equal(g, e, is_f32):
                                 diffs.append(f"{assoc} {name}[{t}][{c}]: got {g!r} expected {e!r}")
                 if len(diffs) >= max_diffs:
                     return Result(rel, "fail", "array value mismatch", diffs)
