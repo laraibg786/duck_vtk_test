@@ -75,10 +75,24 @@ echo "target   : $TARGET_SRC"
 echo
 
 failures=0
+checked=0
 for src in "$@"; do
   if [[ ! -f "$src/src/include/duckdb/storage/storage_extension.hpp" ]]; then
-    echo "SKIP $src (not a DuckDB source tree)"; continue
+    # A tree that cannot be probed is a FAILURE, not a skip.
+    #
+    # Every path here was named explicitly by the caller, so "I could not check the
+    # thing you asked me to check" must not end with "all versions OK". It did:
+    # pointing this at a half-extracted DuckDB tarball printed
+    #   SKIP /tmp/duckdb-1.4.5 (not a DuckDB source tree)
+    #   all versions OK
+    # and exited 0 — so `make check-api-compat EXTRA_DUCKDB_SRC=...` could report
+    # success having verified nothing beyond the default tree.
+    echo "FAIL $src is not a DuckDB source tree"
+    echo "     (expected $src/src/include/duckdb/storage/storage_extension.hpp)"
+    failures=$((failures+1))
+    continue
   fi
+  checked=$((checked+1))
   expected="$(probe_expected "$src")"
   style=$([[ "$expected" == 1 ]] && echo "1.5-style static Register" || echo "1.4-style storage_extensions map")
   echo "=== $src"
@@ -109,4 +123,7 @@ done
 if (( failures )); then
   echo "$failures version(s) failed"; exit 1
 fi
-echo "all versions OK"
+if (( checked == 0 )); then
+  echo "no DuckDB source tree was actually checked"; exit 1
+fi
+echo "all $checked version(s) OK"
