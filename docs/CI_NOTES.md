@@ -265,3 +265,77 @@ Every run annotates:
 
 That comes from `_extension_distribution.yml` using `actions/checkout@v4`. Nothing to
 fix on our side.
+
+---
+
+## 17. The whole `description.yml` is published verbatim — comments included
+
+`duckdb/community-extensions/scripts/generate_md.sh` contains literally:
+
+```sh
+cat extensions/$extension/description.yml >> $EXTENSION_README
+```
+
+so the file is appended into the Jekyll front matter of
+`duckdb.org/community_extensions/extensions/<name>`. **Every comment line ships to a
+public page.** Our descriptor carried ~60 lines of internal CI reasoning; that is why
+`community-extension/description.yml` is now lean and this file holds the reasoning.
+
+Related format rules, all verified against `scripts/build.py` in that repo:
+
+* `excluded_platforms` and `requires_toolchains` must be `;`-separated **strings**.
+  A YAML list serialises as `['wasm_mvp', ...]`, matches no platform, and raises no
+  error. One live extension (`mssql`) has this bug and excludes nothing.
+* The directory name must equal `extension.name` — this is one of only two explicit
+  `raise ValueError`s in their entire validation path. The other rejects a PR that
+  touches more than one descriptor.
+* The file must be `description.yml`, not `.yaml`. `build.yml`'s path filter is
+  `extensions/*/description.yml`, so a wrongly-named file runs **no CI at all** and
+  the PR simply sits there.
+* `repo.ref` must be a full 40-character SHA. Maintainers reject tags explicitly:
+  "we do not allow (mutable) tags as `ref` targets, only hashes."
+* `maintainers` entries are bare GitHub handles — no `@`, no email, no display name.
+* `extension.version` is **not read by any script** and is explicitly deprioritised
+  by maintainers; 12 live extensions omit it entirely.
+* There is no JSON schema and no validator beyond `scripts/build.py`, and no
+  `CONTRIBUTING.md` or PR template. The prose spec lives in `duckdb/duckdb-web` at
+  `community_extensions/documentation.md` (which spells the key `licence`; 317 of
+  319 live descriptors use `license`, and no script reads either).
+
+## 18. `docs.hello_world` is documentation — it is never executed
+
+Worth recording because it is easy to assume otherwise and over-engineer the example.
+`grep -rn hello_world` across all of `community-extensions` returns exactly three
+hits: one in `generate_extensions_json.py` (copies the string into JSON) and two in
+`layout/default.md` (renders it inside a ```sql fence). No script that invokes DuckDB
+touches it, and the `doc_test` job in `build.yml` is currently `if: false`.
+
+Two consequences:
+
+* A remote URL in `hello_world` introduces no network dependency into their pipeline.
+* The layout **already wraps it in a ```sql fence**, so wrapping it again in the
+  descriptor produces a visibly broken code block. Maintainers have commented on this.
+
+A human reviewer does read the example, though, and has pushed back on ones that do
+not work. Ours therefore leads with a local path and mentions the `httpfs`/`https://`
+route as a trailing comment.
+
+## 19. A run can report `failure` with every visible job green
+
+Run `30218995966` on the throwaway test repo concluded `failure` while all **16**
+check runs were `success` or `skipped`. The cause is that
+`community-extensions build (v1.4.5) / MacOS` produced **no job record at all** — not
+`failure`, not `cancelled`, simply absent from both `gh run view --json jobs` and the
+commit's check-runs list.
+
+The caller job of a reusable workflow is not exposed as a check run, so when the
+called workflow fails to materialise a job, the failure has nowhere to appear. The
+relevant difference between the two branches:
+
+* `v1.4-andium`   → `macos:` job has `runs-on: macos-latest` (hardcoded)
+* `v1.5-variegata` → `runs-on: ${{ matrix.runner }}` (pinned `macos-15`)
+
+Practical lesson, and a companion to §12: **counting green checks does not tell you
+the run passed.** Compare the set of jobs that ran against the set you expected.
+Since `build_andium.yml` is `if: false` upstream (§8), the LTS macOS line is not
+built for a submission anyway.

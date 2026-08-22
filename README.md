@@ -47,8 +47,8 @@ needs them. They exist because the DuckDB community-extensions CI requires a
 | OS | Linux x86_64 (macOS should work; not yet tested) |
 | Compiler | GCC ≥ 11 or Clang ≥ 14, C++17. Verified with GCC 14.2 |
 | Build tools | CMake ≥ 3.16, Ninja (optional but much faster), ccache (optional, big win) |
-| VTK | ≥ **9.1**. `make configure` builds a minimal 9.6.2 if none is found. 9.1 is the floor because that is the oldest version CI actually builds against (Ubuntu 24.04 ships it) |
-| DuckDB | Built from the pinned submodule. **Verified against 1.5.4 and 1.4.5 (LTS)** — full suite green on both |
+| VTK | ≥ **9.6** (`DUCK_VTK_MIN_VERSION` in `cmake/DuckVTKFindVTK.cmake` is authoritative). `make configure` builds a minimal one if none is found. **No current distro package qualifies** — see below |
+| DuckDB | Built from the pinned submodule. **Verified against 1.5.5 and 1.4.5 (LTS)** — full suite green on both |
 
 Override the compiler the normal CMake way:
 
@@ -90,9 +90,15 @@ Three supported ways, in order of preference:
 
 ```bash
 ./scripts/build_minimal_vtk.sh          # recommended: ABI-matched to your compiler
-sudo apt install libvtk9-dev            # needs root; VTK 9.3
 brew install vtk                        # large: pulls Qt/mesa/llvm (~2.8 GB)
 ```
+
+**Not `apt install libvtk9-dev`.** Ubuntu 24.04 ships VTK 9.1, which fails to parse
+any XML file containing an `<AppendedData>` section — and then reports success and
+hands back an *empty* mesh. This is not hypothetical: CI built against it for months
+and passed while exercising a broken VTK. The version floor now rejects it outright.
+The underlying cause is VTK older than 9.3.1 combined with expat ≥ 2.6.0, which
+Ubuntu 24.04 also ships.
 
 Point at a specific one with `make release VTK_DIR=/path/to/lib/cmake/vtk-9.6`.
 
@@ -185,7 +191,7 @@ Array names are used **verbatim**, including spaces, dots, unicode and mixed cas
 
 **Working:** legacy `.vtk` (ascii + binary; UnstructuredGrid, PolyData, StructuredGrid, StructuredPoints, RectilinearGrid, and field-only `DATASET FIELD`), XML `.vtu` `.vtp` `.vts` `.vtr` `.vti` (ascii, binary, appended, compressed). Higher-order/quadratic/Lagrange/Bézier cells all read.
 
-**Rejected with a clear error, not yet supported:** multiblock `.vtm`, time series `.pvd`, parallel `.pvtu`, and the CAE importers (ExodusII, CGNS, VTKHDF, EnSight, OpenFOAM). The last group needs VTK built with those optional modules; `cmake/DuckVTKFindVTK.cmake` probes for them and degrades gracefully.
+**Rejected with a clear error, not yet supported:** multiblock `.vtm`, time series `.pvd`, parallel `.pvtu`, and the CAE importers (ExodusII, CGNS, VTKHDF, EnSight, OpenFOAM). Supporting the last group needs three things together — the VTK module enabled in both `vcpkg_ports/vtk-minimal` and `scripts/build_minimal_vtk.sh`, the component listed in `cmake/DuckVTKFindVTK.cmake`, and a reader-factory entry in `src/vtk/vtk_dataset.cpp`. None of them is present today, so these files fail with `Unrecognized file type`.
 
 ## Limitations (deliberate, documented)
 
@@ -193,14 +199,17 @@ Array names are used **verbatim**, including spaces, dots, unicode and mixed cas
 - **Single-threaded scans.** `MaxThreads()` returns 1. State is kept so a parallel version needs only a work-range split.
 - **Data converted per scan**, not cached.
 - **No filter pushdown.** Projection pushdown *is* implemented.
-- **`cell_points` positions rows by walking cells** from the start of each chunk.
+- **`cell_points` is a sequential scan.** It resumes from the previous chunk's
+  position rather than rewalking, so it is linear in the cell count; a random-access
+  entry into the middle of the table still costs one walk.
 - **Read-only.** Writing VTK files is a separate problem.
 - **Not a self-contained binary**: it links VTK's shared libraries via RPATH.
 
 ## Testing
 
 ```bash
-make test            # sqllogictest — 594 assertions, green on 1.5.4 and 1.4.5
+make test            # sqllogictest — 354 assertions, green on 1.5.5 and 1.4.5
+make test-memory-reads  # the same suites through the in-memory (remote) read path
 make invariants      # 15 properties × every corpus file
 make oracle          # elementwise diff against an independent Python VTK
 make smoke           # build + load, including into the SYSTEM duckdb
@@ -209,19 +218,26 @@ make check           # everything
 make check-api-compat EXTRA_DUCKDB_SRC=/tmp/duckdb-1.4.5   # version shim, in seconds
 ```
 
-Verified on **DuckDB 1.5.4 and 1.4.5 (LTS)**: 594 sqllogictest assertions and
-66 files × 15 invariants pass on both. Building against LTS is what caught a
+Verified on **DuckDB 1.5.5 and 1.4.5 (LTS)**: 354 sqllogictest assertions and
+68 files × 15 invariants pass on both, plus the same suites re-run through the
+in-memory parse path (`make test-memory-reads`). `test/sql/regressions.test` pins
+every defect that has been fixed, so none of them can come back silently. Building against LTS is what caught a
 `CREATE INDEX` crash that 1.5.x masks — see the `BindCreateIndex` override.
 
-Correctness is established against **independent ground truth**, never against the extension itself: a Python VTK build that shares no code with the C++ one, plus hand-derived values for three ASCII fixtures (see `docs/research/04-test-data-corpus.md` §4). The 79-file corpus is committed with a checksum manifest.
+Correctness is established against **independent ground truth**, never against the extension itself: a Python VTK build that shares no code with the C++ one, plus hand-derived values for three ASCII fixtures (see `docs/research/04-test-data-corpus.md` §4). The 83-file corpus is committed with a checksum manifest, verified by `make data`.
 
 The standout invariant cross-checks SQL-computed bounds against VTK's independent `GetBounds`, which catches x/y/z transposition that no spot check on a symmetric mesh would find.
 
 ## Submitting to DuckDB community extensions
 
 The repo is structured for submission. `community-extension/description.yml` is
-the descriptor to copy into a `duckdb/community-extensions` PR; it has two TODOs
-(the GitHub repo path and maintainer handle).
+the descriptor to copy into a `duckdb/community-extensions` PR. It has three TODOs
+(`repo.github`, `repo.ref`, and the maintainer handle) and `make submit-check`
+fails until all three are filled in.
+
+Note the descriptor is published **verbatim, comments included**, onto the public
+docs page, so it deliberately carries no internal reasoning — that lives in
+`docs/CI_NOTES.md`.
 
 ```bash
 make submit-check     # everything that must hold before submitting
@@ -249,19 +265,28 @@ drops from 26 to 3.
 
 ### Platform scope
 
-The first submission targets **`linux_amd64` and `linux_arm64`**. The other 11
-matrix platforms are excluded, each for a stated reason: macOS builds cannot be
-verified from the development machine, Windows needs an MSVC VTK build, wasm is
-not viable for VTK at all, and musl needs a fully static VTK. Widen one platform
-at a time, each with a green build behind it — `excluded_platforms` in
-`description.yml` and `exclude_archs` in `.github/workflows/ci.yml` must stay in
-step.
+`excluded_platforms` in `community-extension/description.yml` is authoritative;
+`scripts/submit_check.sh` enforces that it matches `exclude_archs` for the default
+DuckDB line in `.github/workflows/ci.yml`.
+
+Excluded: **wasm** (`wasm_mvp`, `wasm_eh`, `wasm_threads`) — VTK does not build
+under Emscripten; **musl** (`linux_amd64_musl`, `linux_arm64_musl`) — needs a fully
+static VTK, and musl is opt-in on the v1.5 matrix but default-on for v1.4-andium, so
+it must be named explicitly; and **`windows_amd64_mingw`** — DuckDB's *own*
+`tools/sqlite3_api_wrapper` does not compile under rtools42 mingw. Nothing in
+duck_vtk or VTK participates in that last one, and both `h5db` and the core
+`iceberg` extension exclude it too.
+
+Everything else is claimed and built green by the `distribution` job in
+`.github/workflows/ci.yml`, which calls the same reusable workflow
+community-extensions calls. Widen or narrow one platform at a time, with a green
+build behind each change.
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| `docs/IMPLEMENTATION_PLAN.md` | Phase plan, verified environment facts, v1.5.4 API gotchas |
+| `docs/IMPLEMENTATION_PLAN.md` | Phase plan, verified environment facts, DuckDB 1.5 API gotchas |
 | `docs/PHASE0_RESULTS.md` | Toolchain gate results and three corrected assumptions |
 | `docs/design/01-relational-schema.md` | Normative table/column/type contract |
 | `docs/design/02-validation-and-testing.md` | Test layers and definition of done |

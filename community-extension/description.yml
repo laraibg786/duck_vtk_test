@@ -1,24 +1,15 @@
-# DuckDB community-extensions submission descriptor.
+# Submission descriptor for duckdb/community-extensions.
 #
-# HOW TO SUBMIT
-#   1. Fill in the two TODOs below (repo.github and maintainers).
-#   2. Push this repo to GitHub and note the exact commit SHA.
-#   3. Fork github.com/duckdb/community-extensions, copy this file to
-#        extensions/vtk/description.yml
-#      (drop these comments; keep the keys), set repo.ref to that SHA, and open a PR.
+# KEEP THIS FILE LEAN. scripts/generate_md.sh in community-extensions does
+#   cat extensions/<name>/description.yml >> $EXTENSION_README
+# so every line here — comments included — is published verbatim into the front
+# matter of duckdb.org/community_extensions/extensions/vtk. The reasoning behind
+# the platform exclusions lives in docs/CI_NOTES.md, not here.
 #
-# Their CI then builds this repo from scratch for every non-excluded platform using
-# duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml. It clones
-# the repo with `submodules: recursive`, checks the duckdb submodule out to the
-# target version (`cd duckdb && git checkout v1.5.5`), provides a pinned vcpkg, and
-# runs `make release`. Nothing on the runner is assumed — every dependency must be
-# declared in vcpkg.json.
-#
-# Verify locally BEFORE submitting:
-#   make ci-verify        # cold-boot build in Docker, the same way their CI does it
-#
-# The name `vtk` was unclaimed as of this writing (extensions/vtk 404s upstream);
-# re-check before opening the PR.
+# To submit: copy to extensions/vtk/description.yml in a fork of
+# duckdb/community-extensions (the directory name MUST equal extension.name),
+# fill repo.github / repo.ref / maintainers, and open a PR. `make submit-check`
+# gates the paperwork; `make ci-verify` and `make ci-verify-vcpkg` gate the build.
 
 extension:
   name: vtk
@@ -28,66 +19,27 @@ extension:
   build: cmake
   license: MIT
 
-  # Platform scope.
-  #
-  # Only wasm is excluded, and permanently: VTK does not build meaningfully under
-  # Emscripten, so there is nothing to gain by trying.
-  #
-  # Everything else is claimed, but with an honest caveat: linux_amd64 is the only
-  # target that has been built and tested on the development machine. The rest rely
-  # on CI, which runs the SAME reusable workflow community-extensions uses
-  # (.github/workflows/ci.yml, `distribution` job) — so a green CI here is the same
-  # evidence their pipeline would produce. Do not submit until that job is green.
-  #
-  # Known per-platform risks, in rough order:
-  #   linux_arm64        cross-compiled VTK via vcpkg; expected to work, slow
-  #   osx_amd64/arm64    VTK builds cleanly on macOS; untestable locally
-  #   windows_*          MSVC VTK build; our code is POSIX-free (std::filesystem)
-  #                      but the template-heavy column writer may need /bigobj
-  #   linux_*_musl       needs a fully static VTK; VTK's factory registration and
-  #                      loguru can be awkward against musl
-  #
-  # NOTE on musl, learnt by running the pipeline (see docs/CI_NOTES.md §1-2):
-  # `linux_amd64_musl` is marked opt_in in the v1.5 matrix but NOT in v1.4-andium, so
-  # the LTS line builds it whether or not you ask. It is therefore named here
-  # explicitly rather than relying on the opt-in default, which only holds for v1.5.
-  # `windows_arm64` is opt-in on both and needs opt_in_archs to build at all.
-  # windows_amd64_mingw is excluded for a reason that is not ours to fix: under the
-  # rtools42 mingw toolchain, DuckDB's OWN tools/sqlite3_api_wrapper fails to compile —
-  #   objidl.h: error: reference to 'byte' is ambiguous
-  #     candidates are: 'enum class std::byte' / 'typedef unsigned char byte'
-  # because that file includes <windows.h> after DuckDB headers have pulled in
-  # std::byte. Nothing in duck_vtk or VTK participates; our VTK builds fine there
-  # (verified once the port was made release-only).
-  #
-  # This is normal practice rather than a workaround: h5db — the closest analogue,
-  # also a heavy C++ file-format dependency — excludes it, and so does iceberg, a
-  # CORE extension maintained by DuckDB themselves.
-  #
-  # It also has a practical cost while it is included: the Windows matrix is
-  # fail-fast, so a mingw failure CANCELS the windows_amd64 (MSVC) job, which is the
-  # Windows target that actually matters.
+  # Must be a ';'-separated STRING, not a YAML list: build.py interpolates it
+  # directly into COMMUNITY_EXTENSION_EXCLUDE_PLATFORMS, and a list serialises as
+  # "['wasm_mvp', ...]" and matches nothing, silently. See docs/CI_NOTES.md.
   excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw"
 
   maintainers:
-    # TODO: replace with the maintainer's GitHub username(s) before submitting.
+    # TODO: bare GitHub handle(s), no '@'.
     - TODO-github-username
 
 repo:
-  # TODO: replace with the published repository, e.g. someorg/duck_vtk
+  # TODO: owner/repo of the published public repository.
   github: TODO-owner/duck_vtk
-  # TODO: replace with the exact commit SHA being submitted (not a branch name).
+  # TODO: full 40-character commit SHA. Tags are rejected — see docs/CI_NOTES.md.
   ref: TODO-commit-sha
 
 docs:
   hello_world: |
-    -- Remote files work through DuckDB's filesystem, so httpfs is needed for https.
-    INSTALL httpfs; LOAD httpfs;
+    -- A VTK mesh becomes six read-only tables.
+    ATTACH 'uGridEx.vtk' AS mesh (TYPE vtk);
 
-    -- Attach a VTK mesh and explore it with plain SQL. A local path works too.
-    ATTACH 'https://raw.githubusercontent.com/Kitware/vtk-examples/master/src/Testing/Data/uGridEx.vtk' AS mesh (TYPE vtk);
-
-    -- What is in the file? Start here on anything unfamiliar.
+    -- What is in this file? Start here on anything unfamiliar.
     SELECT association, name, sql_type, num_components, num_tuples
     FROM mesh.vtk_arrays;
 
@@ -103,6 +55,10 @@ docs:
     GROUP BY cp.cell_id
     ORDER BY cp.cell_id
     LIMIT 5;
+
+    -- Remote files work too, through DuckDB's filesystem:
+    --   INSTALL httpfs; LOAD httpfs;
+    --   ATTACH 'https://example.org/wing.vtu' AS mesh (TYPE vtk);
 
   extended_description: |
     `vtk` makes [VTK](https://vtk.org) mesh files queryable as relational tables,
@@ -160,7 +116,7 @@ docs:
 
     ### Current limitations
 
-    Read-only. The whole dataset is loaded into memory at `ATTACH`; for a remote
-    object that means downloading it in full, as VTK cannot parse incrementally.
-    Scans are single-threaded and there is no filter pushdown (projection pushdown
-    is implemented).
+    Read-only; an attached database reports `readonly = true`. The whole dataset is
+    loaded into memory at `ATTACH`; for a remote object that means downloading it in
+    full, as VTK cannot parse incrementally. Scans are single-threaded and there is
+    no filter pushdown (projection pushdown is implemented).
