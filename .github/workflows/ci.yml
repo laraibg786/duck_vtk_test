@@ -150,13 +150,20 @@ jobs:
       - name: Formatting (clang-format 11.0.1, the version DuckDB pins)
         run: |
           set -euo pipefail
-          pipx install clang-format==11.0.1 2>/dev/null || pip install --user --quiet clang_format==11.0.1
+          # A venv, not `pip install --user`: Ubuntu 24.04 ships PEP 668's
+          # EXTERNALLY-MANAGED marker, so a --user install is refused outright. The
+          # previous form also swallowed pipx's errors with 2>/dev/null, so a failure
+          # here would have been reported as a formatting violation.
+          python3 -m venv /tmp/cf
+          /tmp/cf/bin/pip install --quiet "clang_format==11.0.1"
+          CF=/tmp/cf/bin/clang-format
+          "$CF" --version
           fail=0
           for f in src/*.cpp src/*/*.cpp src/include/*.hpp src/include/*/*.hpp; do
             [ -f "$f" ] || continue
-            if ! clang-format --sort-includes=0 -style=file "$f" | diff -u "$f" - ; then fail=1; fi
+            if ! "$CF" --sort-includes=0 -style=file "$f" | diff -u "$f" - ; then fail=1; fi
           done
-          [ "$fail" -eq 0 ] || { echo "::error::run 'make format-fix' (or clang-format -i) and commit"; exit 1; }
+          [ "$fail" -eq 0 ] || { echo "::error::formatting drift — run clang-format -i with 11.0.1 and commit"; exit 1; }
 
       - name: Corpus integrity
         # `sha256sum -c` exits 1 on a mismatch, and that status must reach the step.

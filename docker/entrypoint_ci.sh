@@ -22,10 +22,13 @@ set -euo pipefail
 # Logs go to mktemp files rather than fixed /tmp names: this script also runs on
 # developer workstations, where a predictable /tmp/build.log is a symlink-attack
 # target.
-_LOGS=()
-newlog() { local f; f=$(mktemp); _LOGS+=("$f"); printf %s "$f"; }
-cleanup() { rm -f "${_LOGS[@]:-}"; }
-trap cleanup EXIT
+# One temp DIRECTORY, removed wholesale. The previous version kept an array and
+# appended to it from newlog() — but newlog() is always called as `x=$(newlog)`, and
+# a command substitution runs in a SUBSHELL, so the parent's array stayed empty and
+# nothing was ever cleaned up.
+_LOGDIR=$(mktemp -d)
+trap 'rm -rf "$_LOGDIR"' EXIT
+newlog() { printf '%s/%s.log' "$_LOGDIR" "$1"; }
 
 STAGE=""
 stage() { STAGE="$1"; printf '\n\033[1;34m########## %s ##########\033[0m\n' "$1"; }
@@ -73,7 +76,7 @@ stage "2. Build minimal VTK from source"
 # trap documented in cmake/DuckVTKFindVTK.cmake. The 9.6 floor rejects it outright,
 # so such a mode could only ever fail; it was removed rather than left to rot.
 echo "building minimal VTK from source (this is the slow step)"
-_vtk_log=$(newlog)
+_vtk_log=$(newlog vtk)
 if ! VTK_DIR=$(JOBS="$JOBS" ./scripts/build_minimal_vtk.sh 2>"$_vtk_log"); then
   tail -40 "$_vtk_log"
   die "minimal VTK build failed"
@@ -100,7 +103,7 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 export DUCKDB_GIT_MIRROR CITOOLS_GIT_MIRROR DUCKDB_SHA CITOOLS_SHA
 # No `make configure` on purpose: `make release` alone has to work, because that is
 # all the community-extensions CI runs.
-_build_log=$(newlog)
+_build_log=$(newlog build)
 make release -j"$JOBS" >"$_build_log" 2>&1 || { tail -60 "$_build_log"; die "make release failed"; }
 grep -E "duck_vtk: (VTK_VERSION|StorageExtension::Register|extra flags)" "$_build_log" || true
 EXT=build/release/extension/vtk/vtk.duckdb_extension
@@ -132,14 +135,14 @@ stage "6. Corpus integrity"
 echo "corpus verified"
 
 stage "7. sqllogictest"
-_sql_log=$(newlog)
+_sql_log=$(newlog sql)
 if ! ./build/release/test/unittest --test-dir . "[sql]" >"$_sql_log" 2>&1; then
   tail -40 "$_sql_log"; die "sqllogictest failed"
 fi
 tail -4 "$_sql_log"
 
 stage "8. SQL invariants"
-_inv_log=$(newlog)
+_inv_log=$(newlog invariants)
 if ! ./scripts/run_invariants.sh >"$_inv_log" 2>&1; then
   tail -40 "$_inv_log"; die "invariants failed"
 fi
@@ -149,7 +152,7 @@ stage "9. In-memory parse path (the route remote files take)"
 # Not covered by stage 7: DUCK_VTK_FORCE_MEMORY_READ reroutes local reads through
 # the in-memory parser, which is otherwise only reachable with httpfs loaded and so
 # went entirely untested.
-_mem_log=$(newlog)
+_mem_log=$(newlog memory)
 if ! DUCK_VTK_FORCE_MEMORY_READ=1 ./build/release/test/unittest --test-dir . "[sql]" >"$_mem_log" 2>&1; then
   tail -40 "$_mem_log"; die "in-memory read path failed"
 fi
@@ -158,7 +161,7 @@ tail -4 "$_mem_log"
 stage "10. API compatibility shim"
 # This used to be an unchecked `| tail -3`, so the cold boot announced success even
 # when the 1.4/1.5 shim no longer compiled — in the one job that gates submission.
-_api_log=$(newlog)
+_api_log=$(newlog apicompat)
 if ! ./scripts/check_api_compat.sh ./duckdb >"$_api_log" 2>&1; then
   tail -20 "$_api_log"; die "API compatibility shim failed"
 fi
