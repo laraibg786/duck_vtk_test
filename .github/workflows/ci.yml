@@ -186,6 +186,77 @@ jobs:
         run: BUILD_MODE=release ./scripts/smoke.sh
 
   # ---------------------------------------------------------------------------
+  # 1b. The independent oracle: every corpus file compared elementwise against a
+  #     Python VTK that shares no code with the C++ one.
+  #
+  #     This is the project's actual correctness ground truth, and until now nothing
+  #     ran it. It had been failing for some time as a result: a fixture added to the
+  #     invariants skip list was never added to the oracle's, and separately the
+  #     oracle could not detect a 64-bit precision regression because it read integer
+  #     arrays through a double-returning accessor. Both are fixed; this job is what
+  #     stops it rotting again.
+  # ---------------------------------------------------------------------------
+  oracle:
+    name: oracle (elementwise vs Python VTK)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build ccache gcc-14 g++-14
+
+      - name: Cache minimal VTK
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/vtk-9.6.2
+          key: vtk-9.6.2-${{ runner.os }}-${{ hashFiles('scripts/build_minimal_vtk.sh') }}
+
+      - name: Build minimal VTK (no-op on cache hit) and export VTK_DIR
+        run: |
+          set -euo pipefail
+          vtk_dir=$(./scripts/build_minimal_vtk.sh | tail -n1)
+          [ -d "$vtk_dir" ] || { echo "::error::not a directory: $vtk_dir"; exit 1; }
+          echo "VTK_DIR=$vtk_dir" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-oracle-${{ github.run_id }}
+          restore-keys: ccache-oracle-
+
+      - name: Build
+        env:
+          CC: gcc-14
+          CXX: g++-14
+        run: make release
+
+      # A plain venv rather than a third-party setup action: `make oracle` already
+      # falls back to .venv/bin/python when uvx is absent, so this needs no new
+      # dependency and exercises that documented fallback.
+      #
+      # The oracle's VTK is whatever the wheel ships, deliberately NOT the 9.6.2 we
+      # link against. An oracle sharing our build would not be independent — and in
+      # practice the wheel is a different minor version, which is a feature here.
+      - name: Python VTK oracle environment
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet vtk numpy
+          .venv/bin/python -c "import vtk, numpy; print('oracle vtk', vtk.VTK_VERSION, 'numpy', numpy.__version__)"
+
+      - name: Elementwise comparison against Python VTK
+        # ORACLE_PY pins the interpreter to the venv built above. Without it the
+        # target prefers uvx when present, so which environment ran would depend on
+        # the runner image rather than on this file.
+        run: make oracle ORACLE_PY=.venv/bin/python
+
+  # ---------------------------------------------------------------------------
   # 2. Cold boot: no preinstalled VTK, no warm cache, repo cloned not copied.
   # ---------------------------------------------------------------------------
   cold-boot:

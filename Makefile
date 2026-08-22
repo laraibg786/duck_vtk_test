@@ -185,8 +185,13 @@ ORACLE_ARGS = scripts/validate_against_vtk.py \
 	--duckdb ./build/release/duckdb \
 	--ext $(EXT_RELEASE_PATH)
 
+## ORACLE_PY pins the interpreter, so a caller can choose the environment instead
+## of depending on which of uvx/.venv happens to exist. CI sets it, so the branch
+## taken there is deterministic rather than a property of the runner image.
 oracle: release
-	@if command -v uvx >/dev/null 2>&1; then \
+	@if [ -n "$(ORACLE_PY)" ]; then \
+		echo "using $(ORACLE_PY)"; $(ORACLE_PY) $(ORACLE_ARGS); \
+	elif command -v uvx >/dev/null 2>&1; then \
 		echo "using uvx"; uvx --with vtk --with numpy python $(ORACLE_ARGS); \
 	elif [ -x .venv/bin/python ]; then \
 		echo "using .venv"; .venv/bin/python $(ORACLE_ARGS); \
