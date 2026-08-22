@@ -40,10 +40,19 @@ public:
 	bool Exists(const std::string &path) override {
 		try {
 			return fs.FileExists(path);
-		} catch (...) {
-			// Some remote filesystems throw rather than returning false for an
-			// unreachable host or a missing credential. Treat that as "not usable
-			// here" and let the caller produce the actionable message.
+		} catch (const PermissionException &) {
+			// Deliberately NOT swallowed. DuckDB's sandbox (enable_external_access,
+			// allowed_directories) signals refusal by throwing, and the catch-all this
+			// replaced turned "you are not permitted to read this" into
+			// "duck_vtk: cannot read '...': no such file" — sending the user off to
+			// hunt for a typo. DuckDB core reports
+			//   Permission Error: Cannot access file "..." - file system operations
+			//   are disabled by configuration
+			// and we should say the same thing rather than contradict it.
+			throw;
+		} catch (const IOException &) {
+			// An unreachable host or a genuinely missing object. The caller turns this
+			// into a message that names the filesystem extensions to load.
 			return false;
 		}
 	}

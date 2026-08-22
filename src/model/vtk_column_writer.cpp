@@ -145,45 +145,117 @@ void WriteBit(vtkDataArray *array, int64_t start, idx_t count, int64_t num_tuple
 		}
 		list_entries[i] = {offset, static_cast<uint64_t>(ncomp)};
 		for (int32_t c = 0; c < ncomp; c++) {
-			child_data[offset + static_cast<idx_t>(c)] =
-			    array->GetComponent(static_cast<vtkIdType>(tuple), c) != 0.0;
+			child_data[offset + static_cast<idx_t>(c)] = array->GetComponent(static_cast<vtkIdType>(tuple), c) != 0.0;
 		}
 		offset += static_cast<idx_t>(ncomp);
 	}
 	ListVector::SetListSize(out, offset);
 }
 
-void WriteStringArray(vtkStringArray *array, int64_t start, idx_t count, Vector &out) {
+//! Multi-component handling matters here, not just for the numeric writers.
+//! VtkArrayLogicalType promotes ANY element type to LIST(element) when ncomp > 1,
+//! strings included — so a two-component string array binds as VARCHAR[]. This
+//! function previously ignored ncomp and wrote string_t straight into what was a
+//! LIST vector, which tripped
+//!     INTERNAL Error: Expected vector of type VARCHAR, but found vector of type LIST
+//! and, in a build with DUCKDB_DEBUG_NO_SAFETY, silently type-punned string_t over
+//! list_entry_t instead. Reproduced with a legacy FIELD array declared
+//! `labels 2 2 string`.
+void WriteStringArray(vtkStringArray *array, int64_t start, idx_t count, int32_t ncomp, Vector &out) {
 	const int64_t num_values = static_cast<int64_t>(array->GetNumberOfValues());
-	auto data = FlatVector::GetData<string_t>(out);
+
+	if (ncomp <= 1) {
+		auto data = FlatVector::GetData<string_t>(out);
+		auto &validity = FlatVector::Validity(out);
+		for (idx_t i = 0; i < count; i++) {
+			const int64_t index = start + static_cast<int64_t>(i);
+			if (index >= num_values) {
+				validity.SetInvalid(i);
+				continue;
+			}
+			const auto &value = array->GetValue(static_cast<vtkIdType>(index));
+			data[i] = StringVector::AddString(out, value.data(), value.size());
+		}
+		return;
+	}
+
+	// vtkStringArray indexes by VALUE, so tuple t component c is value t*ncomp + c.
+	ListVector::Reserve(out, count * static_cast<idx_t>(ncomp));
+	auto list_entries = FlatVector::GetData<list_entry_t>(out);
 	auto &validity = FlatVector::Validity(out);
+	auto &child = ListVector::GetEntry(out);
+	auto child_data = FlatVector::GetData<string_t>(child);
+	auto &child_validity = FlatVector::Validity(child);
+	idx_t offset = 0;
 	for (idx_t i = 0; i < count; i++) {
-		const int64_t index = start + static_cast<int64_t>(i);
-		if (index >= num_values) {
+		const int64_t base = (start + static_cast<int64_t>(i)) * static_cast<int64_t>(ncomp);
+		if (base + static_cast<int64_t>(ncomp) > num_values) {
 			validity.SetInvalid(i);
+			list_entries[i] = {offset, 0};
 			continue;
 		}
-		const auto &value = array->GetValue(static_cast<vtkIdType>(index));
-		data[i] = StringVector::AddString(out, value.data(), value.size());
+		list_entries[i] = {offset, static_cast<uint64_t>(ncomp)};
+		for (int32_t c = 0; c < ncomp; c++) {
+			const auto &value = array->GetValue(static_cast<vtkIdType>(base + c));
+			// AddString must target the CHILD vector: that is where the string data
+			// has to be owned for a LIST column.
+			child_data[offset + static_cast<idx_t>(c)] = StringVector::AddString(child, value.data(), value.size());
+		}
+		offset += static_cast<idx_t>(ncomp);
 	}
+	child_validity.SetAllValid(offset);
+	ListVector::SetListSize(out, offset);
 }
 
 //! Last resort for array classes we cannot type (e.g. vtkVariantArray): render as
 //! text so the data is at least visible rather than silently dropped.
-void WriteAsText(vtkAbstractArray *array, int64_t start, idx_t count, Vector &out) {
+//! ncomp-aware for the same reason as WriteStringArray above — the VARCHAR
+//! fallback is promoted to VARCHAR[] whenever ncomp > 1.
+void WriteAsText(vtkAbstractArray *array, int64_t start, idx_t count, int32_t ncomp, Vector &out) {
 	const int64_t num_tuples = static_cast<int64_t>(array->GetNumberOfTuples());
-	auto data = FlatVector::GetData<string_t>(out);
+
+	if (ncomp <= 1) {
+		auto data = FlatVector::GetData<string_t>(out);
+		auto &validity = FlatVector::Validity(out);
+		for (idx_t i = 0; i < count; i++) {
+			const int64_t tuple = start + static_cast<int64_t>(i);
+			if (tuple >= num_tuples) {
+				validity.SetInvalid(i);
+				continue;
+			}
+			vtkVariant v = array->GetVariantValue(static_cast<vtkIdType>(tuple));
+			auto text = v.ToString();
+			data[i] = StringVector::AddString(out, text.data(), text.size());
+		}
+		return;
+	}
+
+	// GetVariantValue indexes by VALUE, like vtkStringArray::GetValue.
+	ListVector::Reserve(out, count * static_cast<idx_t>(ncomp));
+	auto list_entries = FlatVector::GetData<list_entry_t>(out);
 	auto &validity = FlatVector::Validity(out);
+	auto &child = ListVector::GetEntry(out);
+	auto child_data = FlatVector::GetData<string_t>(child);
+	auto &child_validity = FlatVector::Validity(child);
+	idx_t offset = 0;
 	for (idx_t i = 0; i < count; i++) {
 		const int64_t tuple = start + static_cast<int64_t>(i);
 		if (tuple >= num_tuples) {
 			validity.SetInvalid(i);
+			list_entries[i] = {offset, 0};
 			continue;
 		}
-		vtkVariant v = array->GetVariantValue(static_cast<vtkIdType>(tuple));
-		auto text = v.ToString();
-		data[i] = StringVector::AddString(out, text.data(), text.size());
+		const int64_t base = tuple * static_cast<int64_t>(ncomp);
+		list_entries[i] = {offset, static_cast<uint64_t>(ncomp)};
+		for (int32_t c = 0; c < ncomp; c++) {
+			vtkVariant v = array->GetVariantValue(static_cast<vtkIdType>(base + c));
+			auto text = v.ToString();
+			child_data[offset + static_cast<idx_t>(c)] = StringVector::AddString(child, text.data(), text.size());
+		}
+		offset += static_cast<idx_t>(ncomp);
 	}
+	child_validity.SetAllValid(offset);
+	ListVector::SetListSize(out, offset);
 }
 
 } // namespace
@@ -194,6 +266,20 @@ void VtkWriteArrayColumn(const VtkArrayInfo &info, vtkAbstractArray *array, int6
 	if (!array) {
 		// The array disappeared between schema discovery and the scan. Report NULL
 		// rather than crashing; vtk_arrays still shows what was expected.
+		//
+		// For a LIST column, setting validity alone leaves list_entry_t
+		// uninitialised. Every other NULL path in this file writes {offset, 0}; a
+		// consumer that reads entries without consulting validity would otherwise
+		// see garbage offsets.
+		const bool is_list = out.GetType().id() == LogicalTypeId::LIST;
+		if (is_list) {
+			ListVector::Reserve(out, 0);
+			auto list_entries = FlatVector::GetData<list_entry_t>(out);
+			for (idx_t i = 0; i < count; i++) {
+				list_entries[i] = {0, 0};
+			}
+			ListVector::SetListSize(out, 0);
+		}
 		for (idx_t i = 0; i < count; i++) {
 			FlatVector::SetNull(out, i, true);
 		}
@@ -202,14 +288,14 @@ void VtkWriteArrayColumn(const VtkArrayInfo &info, vtkAbstractArray *array, int6
 
 	if (info.is_string_array) {
 		if (auto *strings = vtkStringArray::SafeDownCast(array)) {
-			WriteStringArray(strings, start, count, out);
+			WriteStringArray(strings, start, count, info.num_components, out);
 			return;
 		}
 	}
 
 	auto *numeric = vtkDataArray::SafeDownCast(array);
 	if (!numeric) {
-		WriteAsText(array, start, count, out);
+		WriteAsText(array, start, count, info.num_components, out);
 		return;
 	}
 
@@ -222,9 +308,9 @@ void VtkWriteArrayColumn(const VtkArrayInfo &info, vtkAbstractArray *array, int6
 #define DUCK_VTK_DISPATCH(VTK_ENUM, VTK_T, DUCK_T)                                                                     \
 	case VTK_ENUM:                                                                                                     \
 		if (is_list) {                                                                                                 \
-			WriteListNumeric<VTK_T, DUCK_T>(numeric, info.vtk_type, start, count, num_tuples, ncomp, out);              \
+			WriteListNumeric<VTK_T, DUCK_T>(numeric, info.vtk_type, start, count, num_tuples, ncomp, out);             \
 		} else {                                                                                                       \
-			WriteScalarNumeric<VTK_T, DUCK_T>(numeric, info.vtk_type, start, count, num_tuples, out);                   \
+			WriteScalarNumeric<VTK_T, DUCK_T>(numeric, info.vtk_type, start, count, num_tuples, out);                  \
 		}                                                                                                              \
 		return;
 
@@ -262,7 +348,8 @@ void VtkWriteArrayColumn(const VtkArrayInfo &info, vtkAbstractArray *array, int6
 	}
 #undef DUCK_VTK_DISPATCH
 
-	WriteAsText(array, start, count, out);
+	// Unknown numeric VTK type: fall back to text, list-aware like the branch above.
+	WriteAsText(array, start, count, ncomp, out);
 }
 
 } // namespace duckdb

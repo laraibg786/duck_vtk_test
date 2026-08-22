@@ -63,6 +63,18 @@ struct VtkGlobalState : public GlobalTableFunctionState {
 	std::vector<FieldDataRow> field_rows;
 	//! Reused across rows so connectivity reads do not allocate per row.
 	std::vector<int64_t> cell_scratch;
+	//! Per-cell connectivity lengths for the chunk currently being emitted into
+	//! point_ids. Kept alongside cell_scratch so the chunk can be measured and
+	//! reserved exactly before the child vector is touched — see EmitCellsFixed.
+	std::vector<int32_t> cell_lengths;
+	//! Resume position for the cell_points walk: the (cell, vertex) pair that row
+	//! `cp_row` sits at. The scan is strictly sequential, so remembering where the
+	//! last chunk stopped turns an O(n^2) rescan into a single pass. See
+	//! EmitCellPoints. Zero-initialised, which is already the correct state for the
+	//! first chunk (row 0 -> cell 0, vertex 0).
+	int64_t cp_row = 0;
+	int64_t cp_cell = 0;
+	int32_t cp_vertex = 0;
 	//! Captured at init: column_ids lives on TableFunctionInitInput, NOT on
 	//! TableFunctionInput, so the scan cannot read it directly.
 	vector<column_t> column_ids;
@@ -179,21 +191,44 @@ void EmitCellsFixed(const VtkDataset &dataset, VtkGlobalState &state, int32_t co
 		return;
 	}
 	case 4: { // point_ids — LIST(BIGINT)
-		// Reserve before touching the child, per the LIST contract.
-		const idx_t capacity = count * static_cast<idx_t>(dataset.MaxCellSize() > 0 ? dataset.MaxCellSize() : 1);
-		ListVector::Reserve(out, capacity);
+		// Gather the chunk's connectivity FIRST, then reserve exactly what it needs.
+		//
+		// This used to reserve `count * MaxCellSize()`, where MaxCellSize() is the
+		// maximum over the WHOLE dataset — so one large cell inflated every chunk,
+		// not just the chunk containing it. Measured: an 873 KB PolyData holding a
+		// single 50,000-point polyline plus 3,000 vertex cells (53,000 connectivity
+		// ids in total, ~424 KB of real output) reserved 2048 * 50,000, which
+		// VectorListBuffer rounds up to the next power of two — exactly 1 GiB — and
+		// failed with "Out of Memory Error: Failed to allocate block of 1073741824
+		// bytes". `SELECT count(*) FROM cells` on the same file was fine, so it
+		// presented as a data problem rather than a sizing bug. A polyhedron or a
+		// long polyline in a real CFD mesh triggers it just as easily.
+		//
+		// Measuring first also makes the reservation exact, which means the child
+		// data pointer taken after it cannot be invalidated part-way through the
+		// fill — the hazard that made the old single-pass shape tempting.
+		state.cell_scratch.clear();
+		state.cell_lengths.clear();
+		state.cell_lengths.reserve(count);
+		for (idx_t i = 0; i < count; i++) {
+			// GetCellPoints appends and returns the number of ids it appended.
+			state.cell_lengths.push_back(dataset.GetCellPoints(start + static_cast<int64_t>(i), state.cell_scratch));
+		}
+
+		ListVector::Reserve(out, state.cell_scratch.size());
 		auto entries = FlatVector::GetData<list_entry_t>(out);
 		auto &child = ListVector::GetEntry(out);
 		auto child_data = FlatVector::GetData<int64_t>(child);
+
 		idx_t offset = 0;
 		for (idx_t i = 0; i < count; i++) {
-			state.cell_scratch.clear();
-			dataset.GetCellPoints(start + static_cast<int64_t>(i), state.cell_scratch);
+			const auto length = static_cast<idx_t>(state.cell_lengths[i]);
 			entries[i].offset = offset;
-			entries[i].length = state.cell_scratch.size();
-			for (auto id : state.cell_scratch) {
-				child_data[offset++] = id;
-			}
+			entries[i].length = length;
+			offset += length;
+		}
+		for (idx_t i = 0; i < state.cell_scratch.size(); i++) {
+			child_data[i] = state.cell_scratch[i];
 		}
 		ListVector::SetListSize(out, offset);
 		return;
@@ -203,25 +238,39 @@ void EmitCellsFixed(const VtkDataset &dataset, VtkGlobalState &state, int32_t co
 	}
 }
 
-//! cell_points is the flattening of the connectivity. Rows are located by walking
-//! cells from the start; for Phase 1 that is acceptable, and the cost is
-//! documented. A later phase can precompute a cell->offset index.
-void EmitCellPoints(const VtkDataset &dataset, VtkGlobalState &state, const vector<column_t> &column_ids,
-                    int64_t start, idx_t count, DataChunk &output) {
-	// Resolve the starting (cell, vertex) position for `start`.
-	int64_t remaining = start;
+//! cell_points is the flattening of the connectivity: one row per (cell, vertex).
+//!
+//! Locating the first row of a chunk used to restart the cell walk from cell 0 every
+//! time, making the whole scan O(n^2) in the cell count. Measured on single-vertex
+//! PolyData: 400k cells took 0.50 s but 1.6M took 10.66 s — 4x the cells for 21x the
+//! time, while `SELECT count(*) FROM cells` over the same files stayed linear.
+//!
+//! The scan is strictly sequential and single-threaded (VtkGlobalState::MaxThreads
+//! returns 1), so the resume point is simply the previous chunk's end. Caching it
+//! makes this linear. The walk-from-zero path is retained for the cold start and for
+//! any future non-sequential entry, so correctness does not depend on the cache
+//! being warm.
+void EmitCellPoints(const VtkDataset &dataset, VtkGlobalState &state, const vector<column_t> &column_ids, int64_t start,
+                    idx_t count, DataChunk &output) {
 	int64_t cell = 0;
 	int32_t vertex = 0;
 	const int64_t num_cells = dataset.NumCells();
-	while (cell < num_cells) {
-		state.cell_scratch.clear();
-		const int32_t n = dataset.GetCellPoints(cell, state.cell_scratch);
-		if (remaining < n) {
-			vertex = static_cast<int32_t>(remaining);
-			break;
+
+	if (start == state.cp_row) {
+		cell = state.cp_cell;
+		vertex = state.cp_vertex;
+	} else {
+		int64_t remaining = start;
+		while (cell < num_cells) {
+			state.cell_scratch.clear();
+			const int32_t n = dataset.GetCellPoints(cell, state.cell_scratch);
+			if (remaining < n) {
+				vertex = static_cast<int32_t>(remaining);
+				break;
+			}
+			remaining -= n;
+			cell++;
 		}
-		remaining -= n;
-		cell++;
 	}
 
 	std::vector<int64_t> cell_ids(count);
@@ -243,6 +292,20 @@ void EmitCellPoints(const VtkDataset &dataset, VtkGlobalState &state, const vect
 			cell++;
 			vertex = 0;
 		}
+	}
+
+	// Remember where this chunk stopped, so the next one does not rewalk.
+	state.cp_row = start + static_cast<int64_t>(produced);
+	state.cp_cell = cell;
+	state.cp_vertex = vertex;
+
+	// The caller sizes `count` from the rows remaining, so a short produce means the
+	// connectivity disagrees with the row count this table was bound with — which
+	// would silently drop rows rather than fail. Cheap to assert, impossible to
+	// diagnose later.
+	if (produced != count) {
+		throw InternalException("duck_vtk: cell_points produced %llu rows for a chunk of %llu",
+		                        (unsigned long long)produced, (unsigned long long)count);
 	}
 
 	for (idx_t col = 0; col < column_ids.size(); col++) {
@@ -328,8 +391,8 @@ void EmitFieldData(const VtkBindData &bind, VtkGlobalState &state, const vector<
 					FlatVector::SetNull(vec, i, true);
 					break;
 				}
-				vtkVariant v = array->GetVariantValue(static_cast<vtkIdType>(row.tuple * info.num_components +
-				                                                            row.component));
+				vtkVariant v =
+				    array->GetVariantValue(static_cast<vtkIdType>(row.tuple * info.num_components + row.component));
 				auto text = v.ToString();
 				SetVarchar(vec, i, text);
 				break;
@@ -399,8 +462,8 @@ void EmitArraysTable(const VtkBindData &bind, const vector<column_t> &column_ids
 				ListVector::Reserve(vec, base + info.component_names.size());
 				auto &child = ListVector::GetEntry(vec);
 				for (size_t c = 0; c < info.component_names.size(); c++) {
-					FlatVector::GetData<string_t>(child)[base + c] = StringVector::AddString(
-					    child, info.component_names[c].data(), info.component_names[c].size());
+					FlatVector::GetData<string_t>(child)[base + c] =
+					    StringVector::AddString(child, info.component_names[c].data(), info.component_names[c].size());
 				}
 				FlatVector::GetData<list_entry_t>(vec)[i] = {base, info.component_names.size()};
 				ListVector::SetListSize(vec, base + info.component_names.size());

@@ -27,8 +27,7 @@ namespace duckdb {
 static void VtkVersionFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	// A constant vector is correct here and avoids writing the same string N times.
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
-	ConstantVector::GetData<string_t>(result)[0] =
-	    StringVector::AddString(result, vtkVersion::GetVTKVersion());
+	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddString(result, vtkVersion::GetVTKVersion());
 }
 
 //===--------------------------------------------------------------------===//
@@ -39,15 +38,15 @@ static void VtkVersionFun(DataChunk &args, ExpressionState &state, Vector &resul
 // in the VTK build we happen to be linked against; the type-mapping layer must
 // not assume it, and a user filing a bug report should be able to tell us.
 static void VtkBuildInfoFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	string info = StringUtil::Format("VTK %s; sizeof(vtkIdType)=%d; 64bit_ids=%s; duck_vtk %s",
-	                                 vtkVersion::GetVTKVersion(), static_cast<int>(sizeof(vtkIdType)),
-	                                 VTK_SIZEOF_ID_TYPE == 8 ? "yes" : "no",
+	string info =
+	    StringUtil::Format("VTK %s; sizeof(vtkIdType)=%d; 64bit_ids=%s; duck_vtk %s", vtkVersion::GetVTKVersion(),
+	                       static_cast<int>(sizeof(vtkIdType)), VTK_SIZEOF_ID_TYPE == 8 ? "yes" : "no",
 #ifdef DUCK_VTK_VERSION
-	                                 DUCK_VTK_VERSION
+	                       DUCK_VTK_VERSION
 #else
-	                                 "unknown"
+	                       "unknown"
 #endif
-	);
+	    );
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	ConstantVector::GetData<string_t>(result)[0] = StringVector::AddString(result, info);
 }
@@ -59,10 +58,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	// v1.5.4 registration: loader.RegisterFunction(...), taking the function by
 	// value. ExtensionUtil::RegisterFunction(db, fn) — used by most tutorials and
 	// by every published extension tracking `main` — does not compile here.
-	loader.RegisterFunction(
-	    ScalarFunction("vtk_version", {}, LogicalType::VARCHAR, VtkVersionFun));
-	loader.RegisterFunction(
-	    ScalarFunction("vtk_build_info", {}, LogicalType::VARCHAR, VtkBuildInfoFun));
+	loader.RegisterFunction(ScalarFunction("vtk_version", {}, LogicalType::VARCHAR, VtkVersionFun));
+	loader.RegisterFunction(ScalarFunction("vtk_build_info", {}, LogicalType::VARCHAR, VtkBuildInfoFun));
 
 	for (auto &fn : VtkAllTableFunctions()) {
 		loader.RegisterFunction(fn);

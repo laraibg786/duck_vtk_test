@@ -63,7 +63,6 @@ TableStorageInfo VtkTableEntry::GetStorageInfo(ClientContext &) {
 VtkSchemaEntry::VtkSchemaEntry(Catalog &catalog, CreateSchemaInfo &info, std::shared_ptr<VtkDataset> dataset_p,
                                std::shared_ptr<VtkSchemaSet> schemas_p)
     : SchemaCatalogEntry(catalog, info), dataset(std::move(dataset_p)), schemas(std::move(schemas_p)) {
-
 	for (auto kind : VtkAllTableKinds()) {
 		auto &table_schema = schemas->Get(kind);
 
@@ -323,6 +322,16 @@ unique_ptr<Catalog> VtkAttach(optional_ptr<StorageExtensionInfo>, ClientContext 
 	// ATTACH 'https://.../mesh.vtu' AS m (TYPE vtk) works with httpfs loaded.
 	auto source = VtkMakeDuckDBFileSource(context);
 	auto dataset = VtkGetCachedDataset(info.path, source.get());
+
+	// Mark the attached database read-only so DuckDB AGREES with us.
+	//
+	// Mutating options.access_mode here would be too late: AttachedDatabase sets
+	// its type from access_mode BEFORE calling attach(), so duckdb_databases()
+	// reported readonly = false for a catalog that throws on every write path and
+	// explicitly refuses READ_WRITE above. SetReadOnlyDatabase() is the supported
+	// way to say it after the fact.
+	db.SetReadOnlyDatabase();
+
 	return make_uniq<VtkCatalog>(db, info.path, std::move(dataset));
 }
 

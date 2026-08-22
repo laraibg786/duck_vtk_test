@@ -1,0 +1,128 @@
+# name: test/sql/regressions.test
+# description: fixed defects, each pinned so it cannot come back silently.
+# group: [vtk]
+
+require vtk
+
+# ---------------------------------------------------------------------------
+# Multi-component non-numeric arrays.
+#
+# VtkArrayLogicalType promotes ANY element type to LIST(element) when ncomp > 1,
+# strings included. WriteStringArray ignored ncomp and wrote string_t into what was
+# a LIST vector, so `vtk_arrays` advertised VARCHAR[] while selecting the column
+# raised "INTERNAL Error: Expected vector of type VARCHAR, but found vector of type
+# LIST" — and, in a build with DUCKDB_DEBUG_NO_SAFETY, silently type-punned instead.
+# ---------------------------------------------------------------------------
+statement ok
+ATTACH 'test/data/synthetic/string_multicomp.vtk' AS s (TYPE vtk);
+
+# What the schema advertises.
+query II
+SELECT sql_type, num_components FROM s.vtk_arrays WHERE name = 'labels';
+----
+VARCHAR[]	2
+
+# What the scan actually produces must agree with it.
+query II
+SELECT point_id, len(labels) FROM s.points ORDER BY point_id;
+----
+0	2
+1	2
+
+statement ok
+DETACH s;
+
+# ---------------------------------------------------------------------------
+# point_ids reservation must be sized from the CHUNK, not the whole dataset.
+#
+# It used to reserve count * MaxCellSize(), the maximum over the entire dataset, so
+# a single large cell inflated every chunk. An 873 KB file with one 50,000-point
+# polyline reserved exactly 1 GiB and died with an Out of Memory Error, while
+# `SELECT count(*) FROM cells` on the same file was fine.
+#
+# This fixture has one 4000-point cell among 200 single-point cells. sqllogictest
+# cannot assert an allocation size (the reservation is outside the buffer manager,
+# so `SET memory_limit` does not see it), so what is pinned here is the two-pass
+# offset/length arithmetic the fix introduced — the part that could silently corrupt
+# connectivity rather than merely waste memory.
+# ---------------------------------------------------------------------------
+statement ok
+ATTACH 'test/data/synthetic/skewed_cell_sizes.vtk' AS k (TYPE vtk);
+
+query III
+SELECT count(*), sum(num_points), max(num_points) FROM k.cells;
+----
+201	4200	4000
+
+# len(point_ids) must equal num_points for every cell, and the big cell must not be
+# truncated at a chunk boundary.
+query I
+SELECT count(*) FROM k.cells WHERE len(point_ids) <> num_points;
+----
+0
+
+# The flattened connectivity must have exactly as many rows as the sum of lengths,
+# which is the cross-check between the cells and cell_points emitters.
+query I
+SELECT (SELECT count(*) FROM k.cell_points) = (SELECT sum(num_points) FROM k.cells);
+----
+true
+
+# The large cell's ids must be the contiguous run 0..3999.
+query III
+SELECT min(point_id), max(point_id), count(*)
+FROM (SELECT unnest(point_ids) AS point_id FROM k.cells WHERE num_points = 4000);
+----
+0	3999	4000
+
+statement ok
+DETACH k;
+
+# ---------------------------------------------------------------------------
+# An attached VTK database must report itself read-only.
+#
+# The catalog refuses every write path and rejects an explicit READ_WRITE, but
+# duckdb_databases() reported readonly = false, because AttachedDatabase takes its
+# type from access_mode BEFORE attach() runs. SetReadOnlyDatabase() is the fix.
+# ---------------------------------------------------------------------------
+statement ok
+ATTACH 'test/data/legacy/uGridEx.vtk' AS m (TYPE vtk);
+
+query II
+SELECT type, readonly FROM duckdb_databases() WHERE database_name = 'm';
+----
+vtk	true
+
+statement ok
+DETACH m;
+
+# ---------------------------------------------------------------------------
+# vtk_info.source_kind was never assigned, so it read 'local' for every dataset
+# including remote ones. file_size_bytes used std::filesystem and returned 0 for
+# anything remote. Both now come from the path actually taken.
+# ---------------------------------------------------------------------------
+query I
+SELECT source_kind FROM vtk_info('test/data/legacy/uGridEx.vtk');
+----
+local
+
+query I
+SELECT file_size_bytes > 0 FROM vtk_info('test/data/legacy/uGridEx.vtk');
+----
+true
+
+# ---------------------------------------------------------------------------
+# Escalated VTK errors must not splice raw file bytes into the SQL error string.
+# Handing VTK a binary CGNS file produced "Unrecognized file type:" followed by
+# hundreds of bytes of the file itself, which then landed in query logs.
+# ---------------------------------------------------------------------------
+statement error
+ATTACH 'test/data/cgns/sqnz_s.adf.cgns' AS bad (TYPE vtk);
+----
+Unrecognized file type
+
+# The detail is bounded, so the message cannot be arbitrarily long.
+statement error
+ATTACH 'test/data/cgns/sqnz_s.adf.cgns' AS bad (TYPE vtk);
+----
+(truncated)

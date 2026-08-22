@@ -42,8 +42,7 @@ public:
 	void Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;
 	void Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;
 
-	optional_ptr<CatalogEntry> LookupEntry(CatalogTransaction transaction,
-	                                       const EntryLookupInfo &lookup_info) override;
+	optional_ptr<CatalogEntry> LookupEntry(CatalogTransaction transaction, const EntryLookupInfo &lookup_info) override;
 
 	// Every write path. Each throws; each is asserted by test/sql/read_only.test,
 	// because an unimplemented pure virtual that crashes instead of throwing is
@@ -81,14 +80,13 @@ public:
 	string GetCatalogType() override;
 
 	optional_ptr<CatalogEntry> CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) override;
-	optional_ptr<SchemaCatalogEntry> LookupSchema(CatalogTransaction transaction,
-	                                              const EntryLookupInfo &schema_lookup,
+	optional_ptr<SchemaCatalogEntry> LookupSchema(CatalogTransaction transaction, const EntryLookupInfo &schema_lookup,
 	                                              OnEntryNotFound if_not_found) override;
 	void ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) override;
 	void DropSchema(ClientContext &context, DropInfo &info) override;
 
-	PhysicalOperator &PlanCreateTableAs(ClientContext &context, PhysicalPlanGenerator &planner,
-	                                    LogicalCreateTable &op, PhysicalOperator &plan) override;
+	PhysicalOperator &PlanCreateTableAs(ClientContext &context, PhysicalPlanGenerator &planner, LogicalCreateTable &op,
+	                                    PhysicalOperator &plan) override;
 	PhysicalOperator &PlanInsert(ClientContext &context, PhysicalPlanGenerator &planner, LogicalInsert &op,
 	                             optional_ptr<PhysicalOperator> plan) override;
 	PhysicalOperator &PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner, LogicalDelete &op,

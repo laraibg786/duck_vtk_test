@@ -174,9 +174,9 @@ VtkSchemaSet VtkBuildSchemas(const VtkDataset &dataset) {
 		AddFixed(t, "cell_type_name", LogicalType::VARCHAR);
 		AddFixed(t, "num_points", LogicalType::INTEGER);
 		AddFixed(t, "point_ids", LogicalType::LIST(LogicalType::BIGINT));
-		AppendArrayColumns(t, result.arrays, VtkAssociation::CELL,
-		                   {CELLS_RESERVED[0], CELLS_RESERVED[1], CELLS_RESERVED[2], CELLS_RESERVED[3],
-		                    CELLS_RESERVED[4]});
+		AppendArrayColumns(
+		    t, result.arrays, VtkAssociation::CELL,
+		    {CELLS_RESERVED[0], CELLS_RESERVED[1], CELLS_RESERVED[2], CELLS_RESERVED[3], CELLS_RESERVED[4]});
 	}
 
 	// ---- cell_points ------------------------------------------------------

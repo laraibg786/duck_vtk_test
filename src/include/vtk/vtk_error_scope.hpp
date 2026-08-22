@@ -41,11 +41,6 @@ public:
 	//! returned string is suitable for embedding in an IOException.
 	std::string Fatal() const;
 
-	//! Everything captured, newline-joined. For diagnostics and DUCK_VTK_TRACE=1.
-	std::string All() const;
-
-	bool Empty() const;
-
 private:
 	std::vector<std::string> messages;
 	void *previous_window = nullptr; // vtkOutputWindow*, held without leaking the header

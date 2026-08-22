@@ -169,12 +169,54 @@ VtkErrorScope::~VtkErrorScope() {
 	}
 }
 
-void VtkErrorScope::Clear() {
-	messages.clear();
+namespace {
+
+//! Remove a leading `ERROR: In /path/to/vtkFoo.cxx, line 123` (and the `Warning:`
+//! variant) that vtkErrorMacro prepends.
+void StripVtkSourceLocation(std::string &text) {
+	for (auto *prefix : {"ERROR: In ", "Warning: In ", "ERROR: ", "Warning: "}) {
+		const std::string p(prefix);
+		if (text.compare(0, p.size(), p) != 0) {
+			continue;
+		}
+		// If this is the "In <file>, line N" form, skip past the line number.
+		const auto comma = text.find(", line ");
+		if (comma != std::string::npos && comma < 200) {
+			auto after = text.find_first_not_of("0123456789 ", comma + 7);
+			text = (after == std::string::npos) ? std::string() : text.substr(after);
+		} else {
+			text = text.substr(p.size());
+		}
+		return;
+	}
 }
 
-bool VtkErrorScope::Empty() const {
-	return messages.empty();
+//! Bound the detail and replace bytes that are not safe to put in an error string.
+//!
+//! VTK quotes the offending file in some messages, so an unrecognised BINARY file
+//! could splice hundreds of raw bytes into a SQL error and into query logs.
+void SanitiseDetail(std::string &text) {
+	constexpr size_t MAX_DETAIL = 300;
+	// Printable ASCII only. Control bytes would let file content inject newlines and
+	// escape sequences into logs; high bytes render as mojibake. The offending path
+	// is printed separately by the caller's format string, so nothing identifying is
+	// lost by scrubbing it here.
+	for (auto &ch : text) {
+		const auto uc = static_cast<unsigned char>(ch);
+		if (uc < 0x20 || uc > 0x7e) {
+			ch = '?';
+		}
+	}
+	if (text.size() > MAX_DETAIL) {
+		text.resize(MAX_DETAIL);
+		text += " ... (truncated)";
+	}
+}
+
+} // namespace
+
+void VtkErrorScope::Clear() {
+	messages.clear();
 }
 
 std::string VtkErrorScope::Fatal() const {
@@ -196,9 +238,9 @@ std::string VtkErrorScope::Fatal() const {
 					}
 				}
 				// Collapse runs of spaces introduced by the above.
-				cleaned.erase(std::unique(cleaned.begin(), cleaned.end(),
-				                          [](char a, char b) { return a == ' ' && b == ' '; }),
-				              cleaned.end());
+				cleaned.erase(
+				    std::unique(cleaned.begin(), cleaned.end(), [](char a, char b) { return a == ' ' && b == ' '; }),
+				    cleaned.end());
 				while (!cleaned.empty() && cleaned.back() == ' ') {
 					cleaned.pop_back();
 				}
@@ -208,22 +250,22 @@ std::string VtkErrorScope::Fatal() const {
 				    cleaned.compare(cleaned.size() - reset.size(), reset.size(), reset) == 0) {
 					cleaned.erase(cleaned.size() - reset.size());
 				}
+				// Drop VTK's "ERROR: In /path/vtkDataReader.cxx, line 556" preamble.
+				// The "| " cleanup above only fires on loguru-formatted lines; plain
+				// vtkErrorMacro output has this shape instead, and leaking a VTK
+				// source path and line number into a SQL error is noise for the user
+				// and churn for us on every VTK upgrade.
+				StripVtkSourceLocation(cleaned);
+				// Bound the result and drop non-printables. The escalated text can
+				// quote the offending FILE: handing VTK a binary CGNS file produced
+				// "Unrecognized file type: <hundreds of raw bytes>" straight into the
+				// SQL error string, and therefore into query logs.
+				SanitiseDetail(cleaned);
 				return cleaned;
 			}
 		}
 	}
 	return std::string();
-}
-
-std::string VtkErrorScope::All() const {
-	std::string result;
-	for (auto &message : messages) {
-		if (!result.empty()) {
-			result += "\n";
-		}
-		result += message;
-	}
-	return result;
 }
 
 } // namespace duckdb

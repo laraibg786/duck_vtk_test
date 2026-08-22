@@ -88,8 +88,8 @@ vtkIdList &CellScratch() {
 //! for every file, including a valid .vtu — it is not overridden on the generic
 //! reader. ReadOutputType() is the working sniffing API. See
 //! docs/PHASE0_RESULTS.md §3 and the correction box in research doc 03 §2.
-vtkSmartPointer<vtkDataObject> ReadDataObject(const std::string &path, VtkErrorScope &scope,
-                                              std::string &reader_class, bool &was_parallel) {
+vtkSmartPointer<vtkDataObject> ReadDataObject(const std::string &path, VtkErrorScope &scope, std::string &reader_class,
+                                              bool &was_parallel) {
 	was_parallel = false;
 
 	{
@@ -156,9 +156,8 @@ vtkSmartPointer<vtkDataObject> ReadDataObject(const std::string &path, VtkErrorS
 	// no geometry and no field arrays. So the trigger for the fallback is
 	// "not a vtkDataSet and carries no arrays", not "null output".
 	// vtkDataObjectReader is the dedicated reader for these files.
-	const bool empty_data_object =
-	    out && !vtkDataSet::SafeDownCast(out) &&
-	    (!out->GetFieldData() || out->GetFieldData()->GetNumberOfArrays() == 0);
+	const bool empty_data_object = out && !vtkDataSet::SafeDownCast(out) &&
+	                               (!out->GetFieldData() || out->GetFieldData()->GetNumberOfArrays() == 0);
 
 	if (!out || empty_data_object) {
 		scope.Clear();
@@ -231,7 +230,8 @@ vtkSmartPointer<vtkDataObject> ReadDataObjectFromMemory(const std::string &bytes
 	if (!xml_type.empty()) {
 		// Parallel/partitioned variants are named P<Type> and are unsupported; flag
 		// rather than silently reading one piece.
-		if (xml_type.rfind('P', 0) == 0 && xml_type.size() > 1 && std::isupper(xml_type[1])) {
+		if (xml_type.rfind('P', 0) == 0 && xml_type.size() > 1 &&
+		    std::isupper(static_cast<unsigned char>(xml_type[1]))) {
 			was_parallel = true;
 		}
 		vtkSmartPointer<vtkXMLReader> reader;
@@ -278,7 +278,7 @@ vtkSmartPointer<vtkDataObject> ReadDataObjectFromMemory(const std::string &bytes
 		return out ? vtkSmartPointer<vtkDataObject>(out) : nullptr;
 	}
 
-    // Legacy: same ReadAll* requirement as the file path, or arrays are dropped.
+	// Legacy: same ReadAll* requirement as the file path, or arrays are dropped.
 	vtkNew<vtkGenericDataObjectReader> legacy;
 	legacy->SetReadFromInputString(1);
 	legacy->SetInputArray(buffer);
@@ -295,8 +295,8 @@ vtkSmartPointer<vtkDataObject> ReadDataObjectFromMemory(const std::string &bytes
 		return nullptr;
 	}
 	auto *out = legacy->GetOutput();
-	if (out && (vtkDataSet::SafeDownCast(out) ||
-	            (out->GetFieldData() && out->GetFieldData()->GetNumberOfArrays() > 0))) {
+	if (out &&
+	    (vtkDataSet::SafeDownCast(out) || (out->GetFieldData() && out->GetFieldData()->GetNumberOfArrays() > 0))) {
 		return vtkSmartPointer<vtkDataObject>(out);
 	}
 
@@ -423,8 +423,9 @@ std::shared_ptr<VtkDataset> VtkDataset::Read(const std::string &path, VtkFileSou
 
 	if (!source->Exists(path)) {
 		throw IOException("duck_vtk: cannot read '%s': no such file%s", path,
-		                  local ? "" : " (or it is unreachable — is the relevant filesystem "
-		                               "extension loaded, e.g. INSTALL httpfs; LOAD httpfs;)");
+		                  local ? ""
+		                        : " (or it is unreachable — is the relevant filesystem "
+		                          "extension loaded, e.g. INSTALL httpfs; LOAD httpfs;)");
 	}
 
 	// The scope must be live before any probing, because probe failures write to
@@ -451,8 +452,7 @@ std::shared_ptr<VtkDataset> VtkDataset::Read(const std::string &path, VtkFileSou
 			// Name the unsupported XML type when the sniffer identified one, rather
 			// than the useless "no reader recognised it".
 			if (reader_class.rfind("<unsupported:", 0) == 0) {
-				detail = "unsupported XML dataset type " +
-				         reader_class.substr(13, reader_class.size() - 14) +
+				detail = "unsupported XML dataset type " + reader_class.substr(13, reader_class.size() - 14) +
 				         "; supported: UnstructuredGrid, PolyData, ImageData, RectilinearGrid, StructuredGrid";
 			} else {
 				detail = "no VTK reader recognised the file contents";
@@ -502,7 +502,17 @@ std::shared_ptr<VtkDataset> VtkDataset::Read(const std::string &path, VtkFileSou
 	result->path = path;
 	result->reader_class = reader_class;
 	result->dataset_class = object->GetClassName();
-	result->file_size_bytes = FileSize(path);
+	// Both of these have to reflect the path actually taken.
+	//
+	// source_kind was never assigned, so it sat at its "local" default for every
+	// dataset ever read — including every https:// and s3:// attach. That is exactly
+	// the question the column exists to answer, so it was a constant lie.
+	//
+	// file_size_bytes used FileSize(), which is std::filesystem and therefore
+	// returns 0 for any remote object. When the bytes came through the memory path
+	// we already know the exact length, so use it.
+	result->source_kind = local ? "local" : "remote";
+	result->file_size_bytes = via_memory ? static_cast<int64_t>(bytes.size()) : FileSize(path);
 	result->Initialise();
 	result->CollectArrays();
 	return result;
@@ -623,11 +633,18 @@ std::string VtkDataset::DebugDump() const {
 	} else {
 		out += "bounds          = <none>\n";
 	}
+	// NOTE: no `column=` field here, deliberately.
+	//
+	// It used to print a.column_name, which is ALWAYS empty on this object: the
+	// collision-resolved SQL column names are assigned by VtkSchemaSet onto its own
+	// copy of the array list (see VtkResolveColumnNames), never onto the dataset's.
+	// So the dump printed column='' for every array — in the one function whose
+	// stated purpose is to reveal exactly that name mapping. The resolved names are
+	// available from the `vtk_arrays` table, which reads the schema's copy.
 	for (auto &a : arrays) {
-		out += StringUtil::Format("array %-5s [%d] name='%s' column='%s' vtk_type=%d (%s) ncomp=%d ntuples=%lld%s%s\n",
-		                          VtkAssociationName(a.association), a.array_index, a.name, a.column_name, a.vtk_type,
-		                          a.vtk_type_name, a.num_components, (long long)a.num_tuples,
-		                          a.is_string_array ? " string" : "",
+		out += StringUtil::Format("array %-5s [%d] name='%s' vtk_type=%d (%s) ncomp=%d ntuples=%lld%s%s\n",
+		                          VtkAssociationName(a.association), a.array_index, a.name, a.vtk_type, a.vtk_type_name,
+		                          a.num_components, (long long)a.num_tuples, a.is_string_array ? " string" : "",
 		                          a.active_as.empty() ? "" : (" active=" + a.active_as).c_str());
 	}
 	return out;
@@ -637,15 +654,55 @@ std::string VtkDataset::DebugDump() const {
 // Dataset cache
 //===--------------------------------------------------------------------===//
 
+namespace {
+
+//! Cache identity for a path.
+//!
+//! The key used to be the raw path string, which had two consequences. A file
+//! edited in place kept serving its OLD contents for as long as anything held the
+//! dataset alive — reproduced with a live ATTACH: after replacing a 4-point file
+//! with a 27-point one, `vtk_info()` still reported 4, and only returned 27 after
+//! DETACH. And two different working directories in one process mapped the same
+//! relative path onto each other's data.
+//!
+//! Local paths are therefore canonicalised and stamped with (size, mtime).
+//! Remote objects keep path-only identity: stat-ing them costs a network round
+//! trip, and the read is the expensive thing the cache exists to avoid.
+std::string VtkCacheKey(const std::string &path, VtkFileSource *source) {
+	if (source && !source->IsLocalPath(path)) {
+		return path;
+	}
+	std::error_code ec;
+	auto canonical = std::filesystem::weakly_canonical(std::filesystem::path(path), ec);
+	const std::string base = ec ? path : canonical.string();
+
+	std::error_code size_ec;
+	const auto size = std::filesystem::file_size(std::filesystem::path(base), size_ec);
+	std::error_code time_ec;
+	const auto mtime = std::filesystem::last_write_time(std::filesystem::path(base), time_ec);
+	if (size_ec || time_ec) {
+		// Cannot stamp it (a race, a permission problem). Falling back to the bare
+		// path would silently restore the stale-read bug, so refuse to share the
+		// entry at all by making the key unique-ish per lookup attempt.
+		return base + "|unstamped";
+	}
+	return StringUtil::Format("%s|%llu|%lld", base, static_cast<unsigned long long>(size),
+	                          static_cast<long long>(mtime.time_since_epoch().count()));
+}
+
+} // namespace
+
 std::shared_ptr<VtkDataset> VtkGetCachedDataset(const std::string &path, VtkFileSource *source) {
 	static std::mutex cache_lock;
 	static std::map<std::string, std::weak_ptr<VtkDataset>> cache;
+
+	const std::string key = VtkCacheKey(path, source);
 
 	// Read outside the lock is not safe here, so keep it simple: the whole
 	// operation is guarded. Reads dominate the cost anyway, and holding the lock
 	// across the read also prevents two threads reading the same large file twice.
 	std::lock_guard<std::mutex> guard(cache_lock);
-	auto entry = cache.find(path);
+	auto entry = cache.find(key);
 	if (entry != cache.end()) {
 		if (auto existing = entry->second.lock()) {
 			return existing;
@@ -653,7 +710,7 @@ std::shared_ptr<VtkDataset> VtkGetCachedDataset(const std::string &path, VtkFile
 		cache.erase(entry);
 	}
 	auto fresh = VtkDataset::Read(path, source);
-	cache[path] = fresh;
+	cache[key] = fresh;
 
 	// Opportunistically drop expired entries so the map does not grow without
 	// bound in a long-lived session that touches many files.
