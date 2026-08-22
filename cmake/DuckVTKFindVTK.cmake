@@ -2,7 +2,7 @@
 #
 # Isolated from the main CMakeLists so that:
 #   * the component list has one authoritative home;
-#   * alternate VTK installations (Homebrew bottle, Debian libvtk9-dev, a local
+#   * alternate VTK installations (Homebrew bottle, a local
 #     minimal source build) can be selected with -DVTK_DIR=... ;
 #   * failures produce an actionable message instead of CMake's default
 #     "Could not find a package configuration file provided by VTK".

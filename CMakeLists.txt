@@ -35,7 +35,7 @@ include_directories(src/include)
 # VTK discovery
 # ---------------------------------------------------------------------------
 # Kept in a separate module so the discovery/diagnostic logic stays readable and
-# so alternate VTK sources (apt libvtk9-dev, a source build) can be selected by
+# so an alternate VTK (a source build under ~/.local, a Homebrew bottle) can be
 # passing -DVTK_DIR=... without editing this file.
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/DuckVTKOptimize.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/DuckVTKFindVTK.cmake)

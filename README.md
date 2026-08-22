@@ -224,7 +224,7 @@ in-memory parse path (`make test-memory-reads`). `test/sql/regressions.test` pin
 every defect that has been fixed, so none of them can come back silently. Building against LTS is what caught a
 `CREATE INDEX` crash that 1.5.x masks — see the `BindCreateIndex` override.
 
-Correctness is established against **independent ground truth**, never against the extension itself: a Python VTK build that shares no code with the C++ one, plus hand-derived values for three ASCII fixtures (see `docs/research/04-test-data-corpus.md` §4). The 83-file corpus is committed with a checksum manifest, verified by `make data`.
+Correctness is established against **independent ground truth**, never against the extension itself: a Python VTK build that shares no code with the C++ one, plus hand-derived values for three ASCII fixtures (see `docs/research/04-test-data-corpus.md` §4). The 84-file corpus is committed with a checksum manifest, verified by `make data`.
 
 The standout invariant cross-checks SQL-computed bounds against VTK's independent `GetBounds`, which catches x/y/z transposition that no spot check on a symmetric mesh would find.
 
