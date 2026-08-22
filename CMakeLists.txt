@@ -112,6 +112,15 @@ set(EXTENSION_SOURCES
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
+# MSVC caps a single object file at 65,279 sections. src/model/vtk_column_writer.cpp
+# instantiates the read path for every VTK scalar type in both scalar and LIST form,
+# which is precisely the shape that overruns it (C1128). /bigobj is the standard
+# remedy and costs nothing elsewhere; other community extensions linking heavy C++
+# dependencies set it the same way.
+if(MSVC)
+  add_compile_options(/bigobj)
+endif()
+
 foreach(_duck_vtk_target ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
   target_link_libraries(${_duck_vtk_target} ${VTK_LIBRARIES})
   duck_vtk_apply_optimisations(${_duck_vtk_target})
@@ -141,9 +150,15 @@ foreach(_duck_vtk_target ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
 endforeach()
 
 # Surface the extension version to the C++ code (see Version() in the entrypoint).
+# The Makefile passes -DDUCK_VTK_VERSION, derived from
+# community-extension/description.yml so there is a single authority. This fallback
+# only applies to a direct cmake invocation, and is deliberately marked so that an
+# artefact built outside the Makefile is identifiable rather than pretending to be a
+# release build.
 if(NOT DEFINED DUCK_VTK_VERSION)
-  set(DUCK_VTK_VERSION "0.1.0-dev")
+  set(DUCK_VTK_VERSION "0.0.0-unknown")
 endif()
+message(STATUS "duck_vtk: extension version     = ${DUCK_VTK_VERSION}")
 foreach(_duck_vtk_target ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
   target_compile_definitions(${_duck_vtk_target} PRIVATE
     DUCK_VTK_VERSION="${DUCK_VTK_VERSION}"

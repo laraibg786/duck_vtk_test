@@ -33,7 +33,10 @@ info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m  ok\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 
-export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+# NOTE: this script used to PREPEND /home/linuxbrew/.linuxbrew/bin to PATH. That
+# silently decided which cmake, ninja, curl, git and duckdb ran on any machine with
+# Linuxbrew installed, overriding the system toolchain. If you want a Homebrew
+# toolchain, put it on PATH yourself.
 
 info "vcpkg commit : $VCPKG_COMMIT"
 info "vcpkg root   : $VCPKG_ROOT"

@@ -22,6 +22,18 @@
 # now requires VTK >= 9.6 and will refuse 9.1 outright — see
 # cmake/DuckVTKFindVTK.cmake for the measurement.
 #
+# OUTPUT CONTRACT
+# --------------
+# stdout carries EXACTLY ONE line: the cmake config directory (the value to use as
+# VTK_DIR). Every progress message, the library listing and the closing hint go to
+# stderr. Callers can therefore write
+#     VTK_DIR=$(./scripts/build_minimal_vtk.sh)
+# and, under `set -e`, a failed build aborts the caller instead of silently
+# assigning whatever happened to be printed last. The previous contract was
+# "the last line of stdout", which meant a build that died early handed the caller
+# a progress message as its VTK_DIR and failed much later with a confusing
+# find_package error.
+#
 # Usage:  ./scripts/build_minimal_vtk.sh [version] [install_prefix]
 
 set -euo pipefail
@@ -32,9 +44,14 @@ PREFIX="${2:-$HOME/.local/vtk-$VTK_VERSION}"
 WORK="${VTK_BUILD_WORKDIR:-/tmp/vtk-build-$VTK_VERSION}"
 JOBS="${JOBS:-$(nproc)}"
 
-info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+# stderr, so stdout stays reserved for the single config-dir line. See the output
+# contract above.
+info() { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
 
-export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+# NOTE: this script used to PREPEND /home/linuxbrew/.linuxbrew/bin to PATH. That
+# silently decided which cmake, ninja, curl, git and duckdb ran on any machine with
+# Linuxbrew installed, overriding the system toolchain. If you want a Homebrew
+# toolchain, put it on PATH yourself.
 
 if [[ -f "$PREFIX/lib/cmake/vtk-$VTK_SERIES/vtk-config.cmake" ]] \
    || [[ -f "$PREFIX/lib/cmake/vtk-$VTK_SERIES/VTKConfig.cmake" ]]; then
@@ -51,7 +68,9 @@ if [[ ! -f "$TARBALL" ]]; then
   info "Downloading VTK $VTK_VERSION source (~54 MB)"
   # --http1.1 avoids the HTTP/2 PROTOCOL_ERROR seen against ghcr.io/vtk.org here.
   # -C - resumes a partial download rather than restarting.
-  curl -fSL --http1.1 -C - -o "$TARBALL.part" \
+  # --no-progress-meter: the meter is not a TTY-aware thing in curl, so without it
+  # every CI log (and every captured stderr) gets thousands of progress lines.
+  curl -fSL --http1.1 --no-progress-meter -C - -o "$TARBALL.part" \
     "https://www.vtk.org/files/release/$VTK_SERIES/$TARBALL"
   mv "$TARBALL.part" "$TARBALL"
 fi
@@ -133,8 +152,8 @@ fi
 
 info "Done. VTK_DIR=$CFG_DIR"
 info "Libraries:"
-ls "$PREFIX"/lib/libvtk*.so* 2>/dev/null | head -20 || true
-cat <<EOF
+ls "$PREFIX"/lib/libvtk*.so* 2>/dev/null | head -20 >&2 || true
+cat >&2 <<EOF
 
 Build the extension against it with:
     make release VTK_DIR=$CFG_DIR

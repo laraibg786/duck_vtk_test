@@ -17,6 +17,22 @@
 # reasoning that Ubuntu 24.04 ships 9.1 and CI built against it — and that was
 # WRONG: it compiles there and then silently returns empty meshes.
 #
+# ROOT CAUSE, corrected. This was originally recorded as "VTK 9.1 cannot parse
+# appended data", which is not quite right and would have misled the next person.
+# The real defect is an incompatibility between VTK older than 9.3.1 and expat
+# >= 2.6.0: VTK deliberately ends the XML document early at <AppendedData> and then
+# keeps feeding the appended bytes to expat, which expat 2.6.0 (Feb 2024) began
+# rejecting. Upstream fixed it in commit db8f9efca220 ("vtkXMLDataParser: track
+# AppendedData state explicitly"), first released in VTK 9.3.1.
+#   https://gitlab.kitware.com/vtk/vtk/-/issues/19258
+# Ubuntu 24.04 ships expat 2.6.1 and builds VTK against system expat, which is why
+# it reproduces there. An upstream 9.1 build with VTK's own vendored expat 2.4.1
+# does NOT reproduce it.
+#
+# This matters for us specifically: the vcpkg port sets
+# VTK_MODULE_USE_EXTERNAL_VTK_expat=ON, so we are always on the external-expat path
+# where the bug bites.
+#
 # What was measured, on Ubuntu 24.04's libvtk9.1t64 (9.1.0+dfsg2):
 #   every XML file containing an <AppendedData> section fails to parse —
 #     vtkXMLDataParser: Error parsing XML in stream at line 32, byte index 2123:
@@ -31,10 +47,11 @@
 # Appended data is not an edge case — it is what most real XML writers emit — so
 # a VTK that cannot read it is not usable for this extension.
 #
-# 9.6.2 is correct: verified locally, and green through the community-extensions
-# pipeline on linux_amd64 and osx_arm64. 9.2 through 9.5 are UNTESTED; they are
-# excluded because there is no evidence for them, not because they are known bad.
-# If you validate one, lower this and say so here.
+# The floor stays at 9.6 rather than dropping to 9.3.1. 9.3.1 through 9.5.x contain
+# the fix and are therefore not known-bad — they are simply UNTESTED here, and a
+# floor should assert what has been verified. 9.1, 9.2 and 9.3.0 are genuinely
+# excluded: they predate the fix. If you validate a version in the 9.3.1-9.5 range,
+# lower this and record the evidence.
 #
 # Note also that src/vtk/vtk_dataset.cpp still restricts itself to the 9.1 API
 # surface for in-memory reads (SetInputString(const std::string &) rather than
@@ -60,21 +77,38 @@ set(DUCK_VTK_REQUIRED_COMPONENTS
                           # a 'DSO missing from command line' link error.
     IOLegacy              # legacy .vtk readers
     IOXML                 # .vtu/.vtp/.vts/.vtr/.vti and the parallel/multiblock variants
+    FiltersCore           # not optional: IOLegacy -> IOCellGrid -> FiltersCellGrid
+                          # -> FiltersCore, so it is linked whatever we ask for.
+                          # Both vcpkg_ports/vtk-minimal and build_minimal_vtk.sh
+                          # enable it explicitly; listing it here keeps the three in
+                          # step and lets submit_check.sh verify that.
 )
 
-# Optional components. Phase 4 formats. Requested separately so a VTK build
-# lacking them degrades to "that format is unsupported" rather than failing the
-# whole configure step.
-# NOTE: IOGeometry is deliberately absent. It requires FiltersHybrid ->
-# RenderingCore, so it cannot exist in a rendering-free VTK build; requesting it
-# makes VTK's own configure step fail. See scripts/build_minimal_vtk.sh.
-set(DUCK_VTK_OPTIONAL_COMPONENTS
-    IOEnSight             # EnSight Gold — common in CFD
-    IOExodus              # ExodusII (.ex2) — common in FEA
-    IOCGNS                # CGNS — CFD standard
-    IOHDF                 # VTKHDF
-    FiltersCore           # forced transitively by IOLegacy; see the note below
-)
+# There is deliberately NO optional-component list any more.
+#
+# There used to be one (IOEnSight, IOExodus, IOCGNS, IOHDF) with a per-component
+# probe loop and DUCK_VTK_HAVE_<NAME> compile definitions, described as letting a
+# VTK without them "degrade gracefully". All of that was dead:
+#
+#   * neither supported VTK source enables them — not vcpkg_ports/vtk-minimal, not
+#     scripts/build_minimal_vtk.sh — so DUCK_VTK_HAVE_* was never defined in any
+#     shipping build;
+#   * nothing in src/ ever referenced DUCK_VTK_HAVE_* (grep: zero hits), so the
+#     definitions had no effect even where they would have been set;
+#   * src/vtk/vtk_dataset.cpp only ever instantiates vtkXMLGenericDataObjectReader,
+#     vtkGenericDataObjectReader and vtkDataObjectReader, so an .ex2/.cgns/.vtkhdf
+#     file fails with "Unrecognized file type" whether or not the module is linked.
+#
+# It also cost three extra find_package invocations on every configure, and would
+# have pulled netCDF/HDF5/CGNS into a database extension for no benefit.
+#
+# NOTE: IOGeometry is deliberately absent too, for a different reason. It requires
+# FiltersHybrid -> RenderingCore, so it cannot exist in a rendering-free VTK build;
+# requesting it makes VTK's own configure step fail. See scripts/build_minimal_vtk.sh.
+#
+# When these formats are actually implemented, add the module to the required list,
+# to the vcpkg port and to the build script together, and make the reader factory
+# instantiate it.
 
 # ---------------------------------------------------------------------------
 # Locate a VTK config directory if the user did not specify one
@@ -136,29 +170,20 @@ if(NOT VTK_FOUND)
     "Install one of the following, then re-run:\n"
     "  * RECOMMENDED, no root needed, ABI-matched to your compiler:\n"
     "        ./scripts/build_minimal_vtk.sh\n"
-    "  * Debian/Ubuntu system package (needs root, VTK 9.3):\n"
-    "        sudo apt install libvtk9-dev\n"
     "  * Homebrew bottle (large: pulls Qt/mesa/llvm; carries an ABI risk):\n"
     "        brew install vtk\n"
+    "\n"
+    "NOT the distro package: Ubuntu/Debian's libvtk9-dev is older than this floor,\n"
+    "and silently returns EMPTY meshes for XML files with an <AppendedData>\n"
+    "section. This message used to recommend it, which could not have worked.\n"
     "\n"
     "If VTK is installed somewhere unusual, pass it explicitly:\n"
     "  make release EXT_FLAGS='-DVTK_DIR=/path/to/lib/cmake/vtk-9.6'\n")
 endif()
 
-# Probe the optional components one at a time. find_package with a failing
-# component in the main call would abort even though these are non-essential.
-set(DUCK_VTK_ENABLED_OPTIONAL "")
-foreach(_comp ${DUCK_VTK_OPTIONAL_COMPONENTS})
-  find_package(VTK ${DUCK_VTK_MIN_VERSION} QUIET COMPONENTS ${_comp})
-  if(TARGET VTK::${_comp})
-    list(APPEND DUCK_VTK_ENABLED_OPTIONAL ${_comp})
-  endif()
-endforeach()
-
-# Re-run the find with the full resolved set so VTK_LIBRARIES contains
-# everything we intend to link and hand to vtk_module_autoinit.
-find_package(VTK ${DUCK_VTK_MIN_VERSION} REQUIRED
-  COMPONENTS ${DUCK_VTK_REQUIRED_COMPONENTS} ${DUCK_VTK_ENABLED_OPTIONAL})
+# Re-run as REQUIRED so the failure mode is a clear CMake error rather than a
+# half-populated VTK_LIBRARIES that fails at link time.
+find_package(VTK ${DUCK_VTK_MIN_VERSION} REQUIRED COMPONENTS ${DUCK_VTK_REQUIRED_COMPONENTS})
 
 # ---------------------------------------------------------------------------
 # Derive the library directory for RPATH purposes
@@ -184,11 +209,3 @@ message(STATUS "duck_vtk: VTK_VERSION            = ${VTK_VERSION}")
 message(STATUS "duck_vtk: VTK_DIR                = ${VTK_DIR}")
 message(STATUS "duck_vtk: VTK library dir        = ${DUCK_VTK_LIBRARY_DIR}")
 message(STATUS "duck_vtk: required components    = ${DUCK_VTK_REQUIRED_COMPONENTS}")
-message(STATUS "duck_vtk: optional components on = ${DUCK_VTK_ENABLED_OPTIONAL}")
-
-# Record which optional formats are available so the C++ can #ifdef the reader
-# factory entries and report honestly in vtk_info / error messages.
-foreach(_comp ${DUCK_VTK_ENABLED_OPTIONAL})
-  string(TOUPPER "${_comp}" _comp_uc)
-  add_compile_definitions(DUCK_VTK_HAVE_${_comp_uc}=1)
-endforeach()

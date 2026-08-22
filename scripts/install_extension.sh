@@ -12,7 +12,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+# NOTE: this script used to PREPEND /home/linuxbrew/.linuxbrew/bin to PATH. That
+# silently decided which cmake, ninja, curl, git and duckdb ran on any machine with
+# Linuxbrew installed, overriding the system toolchain. If you want a Homebrew
+# toolchain, put it on PATH yourself.
 
 EXT_NAME="vtk"
 EXT_BUILT="build/release/extension/${EXT_NAME}/${EXT_NAME}.duckdb_extension"

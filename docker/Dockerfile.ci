@@ -17,13 +17,11 @@
 FROM ubuntu:24.04
 
 ARG DUCKDB_VERSION_TAG=v1.5.5
-ARG VTK_MODE=source
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=UTC
 
-# Toolchain only. Note there is NO vtk package here in the default path: the point
-# is to exercise our own minimal VTK build, which is what CI will do via the
-# vtk-minimal vcpkg port.
+# Toolchain only. There is deliberately NO vtk package: the point is to exercise our
+# own minimal VTK build, which is what CI does via the vtk-minimal vcpkg port.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
@@ -39,13 +37,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         zip unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Optional second mode: build against Debian/Ubuntu's packaged VTK instead of
-# building one. Useful for confirming the extension is not secretly tied to VTK
-# 9.6 — libvtk9-dev here is 9.1/9.3 depending on the release.
-RUN if [ "$VTK_MODE" = "apt" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends libvtk9-dev \
-        && rm -rf /var/lib/apt/lists/*; \
-    fi
+# There was a second mode here that installed libvtk9-dev, to confirm "we are not
+# secretly tied to VTK 9.6". We are, deliberately: Ubuntu ships VTK 9.1, which
+# silently returns empty meshes for appended-data XML, and the version floor now
+# rejects it. The mode could therefore only ever fail, so it is gone rather than
+# left advertising a disproven claim.
 
 WORKDIR /work
 
@@ -55,8 +51,12 @@ ARG REPO_REF=HEAD
 COPY docker/entrypoint_ci.sh /usr/local/bin/entrypoint_ci.sh
 RUN chmod +x /usr/local/bin/entrypoint_ci.sh
 
+# REPO_URL/REPO_REF must be promoted to ENV to have any effect: the entrypoint reads
+# them from the environment, and a bare ARG does not survive into the running
+# container. As build-args alone they were silently inert.
 ENV DUCKDB_VERSION_TAG=${DUCKDB_VERSION_TAG} \
-    VTK_MODE=${VTK_MODE} \
+    REPO_URL=${REPO_URL} \
+    REPO_REF=${REPO_REF} \
     CCACHE_DIR=/ccache
 
 ENTRYPOINT ["/usr/local/bin/entrypoint_ci.sh"]

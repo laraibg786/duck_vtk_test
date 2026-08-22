@@ -32,11 +32,15 @@
 set(VCPKG_BUILD_TYPE release)
 
 vcpkg_download_distfile(ARCHIVE
-    # vtk.org is the canonical source. A GitHub mirror of the same release is
-    # listed second so a vtk.org outage does not break every build.
+    # vtk.org is the only source. There WAS a second URL here pointing at
+    # github.com/Kitware/VTK/releases/download/..., described as a fallback for a
+    # vtk.org outage. It never worked: Kitware/VTK on GitHub publishes TAGS ONLY and
+    # has zero releases, so that URL has always been a 404 (verified against the
+    # GitHub API: `gh api repos/Kitware/VTK/releases` returns an empty list). A
+    # fallback that cannot succeed is worse than none, because it suggests the
+    # download is more resilient than it is.
     URLS
         "https://www.vtk.org/files/release/9.6/VTK-9.6.2.tar.gz"
-        "https://github.com/Kitware/VTK/releases/download/v9.6.2/VTK-9.6.2.tar.gz"
     FILENAME "VTK-9.6.2.tar.gz"
     SHA512 1a8d6c89ab03961f59181b12d06d9baca09445485e1cb5ac78a81ec4a2f9d8a25e87d6112f932d856782d0fcab23880295a95fd38e7f9b0b9592138fb2e2e671
 )
@@ -73,7 +77,9 @@ vcpkg_cmake_configure(
         -DVTK_WRAP_PYTHON=OFF
         -DVTK_WRAP_JAVA=OFF
         -DVTK_ENABLE_WRAPPING=OFF
-        # No CLI tools; we only want libraries and headers.
+        # Install headers and the CMake package config, which is what
+        # find_package(VTK) needs. (This option is about the SDK, not about CLI
+        # tools -- an earlier comment here claimed the latter.)
         -DVTK_INSTALL_SDK=ON
 
         # --- what we DO build ------------------------------------------------
@@ -88,6 +94,13 @@ vcpkg_cmake_configure(
         -DVTK_MODULE_ENABLE_VTK_IOLegacy=YES
         -DVTK_MODULE_ENABLE_VTK_IOXML=YES
         -DVTK_MODULE_ENABLE_VTK_FiltersCore=YES
+
+        # Explicit, not left to VTK's 64-bit-platform default. sizeof(vtkIdType) is
+        # load-bearing for this extension: the whole exact-integer story depends on
+        # it, and vtk_build_info() reports it. scripts/build_minimal_vtk.sh has
+        # always set it, so relying on a default in the build that SHIPS while
+        # pinning it in the build that does not was backwards.
+        -DVTK_USE_64BIT_IDS=ON
 
         # IOParallelXML is deliberately NOT enabled. All 20 of its classes are
         # WRITERS (vtkXMLP*Writer and writer helpers) — every vtkXMLP*Reader lives
@@ -121,9 +134,12 @@ vcpkg_cmake_configure(
 
 vcpkg_cmake_install()
 
-# VTK installs its config as lib/cmake/vtk-9.6/. vcpkg_cmake_config_fixup moves it
-# to share/vtk-minimal/ and rewrites the paths, which is what makes
+# VTK installs its config as lib/cmake/vtk-<series>/. With PACKAGE_NAME VTK,
+# vcpkg_cmake_config_fixup moves it to share/vtk/ (NOT share/vtk-minimal/, as an
+# earlier comment claimed) and rewrites the paths, which is what makes
 # find_package(VTK) work through the vcpkg toolchain.
+# CONFIG_PATH is series-sensitive: a VTK minor bump must change it here too, and a
+# stale value fails only after the entire VTK build has completed.
 vcpkg_cmake_config_fixup(PACKAGE_NAME VTK CONFIG_PATH lib/cmake/vtk-9.6)
 
 vcpkg_copy_pdbs()
@@ -133,9 +149,17 @@ file(REMOVE_RECURSE
     "${CURRENT_PACKAGES_DIR}/debug/include"
     "${CURRENT_PACKAGES_DIR}/debug/share"
     "${CURRENT_PACKAGES_DIR}/debug/bin"
-    "${CURRENT_PACKAGES_DIR}/bin"
     "${CURRENT_PACKAGES_DIR}/share/licenses"
     "${CURRENT_PACKAGES_DIR}/share/vtk/doxygen"
 )
+
+# bin/ only on a STATIC triplet. This used to be unconditional, which on a dynamic
+# triplet (where VTK's DLLs live in bin/) deleted the runtime libraries and left
+# import libraries pointing at nothing. Every triplet community-extensions uses is
+# static, so it never fired -- but VTK_BUILD_SHARED above explicitly supports the
+# dynamic case, and the port should not quietly break it.
+if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
+    file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/bin")
+endif()
 
 vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/Copyright.txt")
