@@ -55,7 +55,7 @@ info "duckdb   : $DUCKDB_BIN ($VERSION, $PLATFORM)"
 info "installing to $TARGET"
 mkdir -p "$EXT_DIR"
 cp -f "$EXT_BUILT" "$TARGET"
-ok "installed ($(stat -c%s "$TARGET") bytes)"
+ok "installed ($(wc -c < "$TARGET" | tr -d " ") bytes)"
 
 # Verify by actually loading it by NAME, which is the thing the user will do and
 # the only check that proves the version/platform directory is right.

@@ -42,7 +42,9 @@ VTK_VERSION="${1:-9.6.2}"
 VTK_SERIES="$(echo "$VTK_VERSION" | cut -d. -f1,2)"
 PREFIX="${2:-$HOME/.local/vtk-$VTK_VERSION}"
 WORK="${VTK_BUILD_WORKDIR:-/tmp/vtk-build-$VTK_VERSION}"
-JOBS="${JOBS:-$(nproc)}"
+# getconf is POSIX and present on both Linux and macOS; nproc is GNU coreutils and
+# absent on a stock macOS, where `set -e` would abort the script on this line.
+JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 
 # stderr, so stdout stays reserved for the single config-dir line. See the output
 # contract above.

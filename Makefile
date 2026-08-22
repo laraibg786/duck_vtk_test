@@ -82,6 +82,9 @@ COMMUNITY_DUCKDB_VERSIONS := v1.5.5 v1.4.5
 # CMakeLists.txt's fallback said 0.1.0-dev, so vtk_build_info() reported a version
 # that matched nothing we would submit. Reading it from the descriptor is the same
 # trick duckhts uses, and it means a release is a one-line edit.
+# macOS has no sha256sum; it ships `shasum`, which accepts -a 256 -c --quiet.
+SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo "shasum -a 256")
+
 DUCK_VTK_VERSION := $(shell sed -n 's/^[[:space:]]*version:[[:space:]]*//p' \
 	$(PROJ_DIR)community-extension/description.yml | head -1)
 ifneq ($(DUCK_VTK_VERSION),)
@@ -161,7 +164,7 @@ setup: configure
 ## status with grep's — so a corrupted corpus exited 0 and this check could
 ## never fail. `--quiet` prints only the FAILED lines, so no filtering is needed.
 data:
-	@cd test/data && sha256sum -c --quiet MANIFEST.sha256 && echo "all corpus files verified"
+	@cd test/data && $(SHA256SUM) -c --quiet MANIFEST.sha256 && echo "all corpus files verified"
 
 ## Phase 0 ABI spike: prove we can link and run against the installed VTK
 ## BEFORE relying on it from inside DuckDB. See scripts/phase0_spike/.

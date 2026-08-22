@@ -164,10 +164,12 @@ fi
 info "5/5  Test corpus"
 # ---------------------------------------------------------------------------
 if [[ -f test/data/MANIFEST.sha256 ]]; then
-  if (cd test/data && sha256sum -c MANIFEST.sha256 >/dev/null 2>&1); then
+  # shasum on macOS, which has no sha256sum.
+  if command -v sha256sum >/dev/null 2>&1; then SHA256SUM="sha256sum"; else SHA256SUM="shasum -a 256"; fi
+  if (cd test/data && $SHA256SUM -c MANIFEST.sha256 >/dev/null 2>&1); then
     ok "corpus verified ($(grep -c . test/data/MANIFEST.sha256) files)"
   else
-    warn "corpus checksum mismatch — run: cd test/data && sha256sum -c MANIFEST.sha256"
+    warn "corpus checksum mismatch — run: cd test/data && $SHA256SUM -c MANIFEST.sha256"
   fi
 else
   warn "no test/data/MANIFEST.sha256 found"

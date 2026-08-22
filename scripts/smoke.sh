@@ -32,7 +32,7 @@ step() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 step "1. Extension artefact exists"
 # ---------------------------------------------------------------------------
 [[ -f "$EXT" ]] || fail "missing $EXT — run 'make ${BUILD_MODE}' first"
-pass "$EXT ($(stat -c%s "$EXT") bytes)"
+pass "$EXT ($(wc -c < "$EXT" | tr -d " ") bytes)"
 
 # ---------------------------------------------------------------------------
 step "2. Dynamic dependencies resolve"
