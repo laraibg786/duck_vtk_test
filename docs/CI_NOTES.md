@@ -329,16 +329,43 @@ check runs were `success` or `skipped`. The cause is that
 commit's check-runs list.
 
 The caller job of a reusable workflow is not exposed as a check run, so when the
-called workflow fails to materialise a job, the failure has nowhere to appear. The
-relevant difference between the two branches:
+called workflow fails to materialise a job, the failure has nowhere to appear.
 
-* `v1.4-andium`   → `macos:` job has `runs-on: macos-latest` (hardcoded)
-* `v1.5-variegata` → `runs-on: ${{ matrix.runner }}` (pinned `macos-15`)
+**Root cause, since confirmed by reproducing it.** It is ours, not upstream's.
+
+GitHub does not allow an expression in a reusable workflow's `uses:`, so both rows
+of our `distribution` matrix call the same file, `@v1.5-variegata` — including the
+row whose `ci_tools_version` is `v1.4-andium`. But `ci_tools_version` only controls
+which copy of the *tools and matrix* is checked out inside the job; it cannot change
+the workflow YAML. That leaves the v1.4.5 row running v1.5 workflow logic against a
+v1.4 matrix, and for macOS the two do not fit:
+
+| | osx entries' `runner` key | `macos:` job `runs-on:` |
+|---|---|---|
+| `v1.5-variegata` | `macos-15` | `${{ matrix.runner }}` |
+| `v1.4-andium` | **absent** | `macos-latest` (hardcoded) |
+
+Each branch is internally consistent. The combination is not: the v1.5 workflow
+evaluates `runs-on: ${{ matrix.runner }}` against v1.4 entries that have no `runner`,
+gets the empty string, and cannot schedule the job. It is never created — not
+failed, not cancelled, not skipped, simply absent — and the run concludes `failure`.
+
+Linux and Windows are unaffected because their v1.4 matrix entries **do** carry
+`runner` (v1.4-andium hardcodes the runner only for macOS).
+
+Confirmed twice, ~26 days apart, on runs 30218995966 and 32566324093: in both, all
+v1.4.5 Linux jobs succeeded, Windows and Wasm showed `skipped`, and MacOS was absent
+while the v1.5.5 MacOS jobs ran normally.
+
+**Fix:** `osx_amd64;osx_arm64` are excluded on the v1.4.5 row in
+`.github/workflows/ci.yml`, exactly as `windows_amd64` already is. With an empty osx
+matrix the job's `if` guard evaluates false and it records a clean `skipped` instead
+of vanishing. This costs nothing at submission time: `build_andium.yml` upstream is
+`if: false` (§8), so the LTS line is not built for a submission PR at all.
 
 Practical lesson, and a companion to §12: **counting green checks does not tell you
-the run passed.** Compare the set of jobs that ran against the set you expected.
-Since `build_andium.yml` is `if: false` upstream (§8), the LTS macOS line is not
-built for a submission anyway.
+the run passed.** Compare the set of jobs that ran against the set you expected. A
+job that never existed leaves no row to read.
 
 ## 20. VTK 9.7.0 is refused, on measurement
 

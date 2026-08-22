@@ -256,7 +256,23 @@ jobs:
           - duckdb_version: v1.4.5
             ci_tools_version: v1.4-andium
             vcpkg_commit: ce613c41372b23b1f51333815feb3edd87ef8a8b
-            exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw;windows_amd64"
+            #
+            # osx_amd64/osx_arm64 are excluded on this line for a reason that is
+            # OURS, not upstream's. GitHub forbids an expression in a reusable
+            # workflow's `uses:`, so both matrix rows call the SAME workflow file,
+            # @v1.5-variegata. That file's macos job is `runs-on: ${{ matrix.runner }}`,
+            # but v1.4-andium's distribution_matrix.json osx entries carry no
+            # `runner` key at all (its own workflow hardcodes `runs-on: macos-latest`
+            # instead). So for this row `runs-on` evaluates to the empty string, the
+            # job cannot be scheduled, and it NEVER MATERIALISES — no failure, no
+            # skip, simply absent from the job list — while the run as a whole
+            # concludes `failure` with every visible check green. See CI_NOTES §19.
+            #
+            # Each branch is internally consistent; only the v1.5-workflow +
+            # v1.4-matrix combination is broken, and that combination is ours.
+            # Linux and Windows are unaffected because their v1.4 matrix entries DO
+            # carry `runner`.
+            exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw;windows_amd64;osx_amd64;osx_arm64"
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
       extension_name: vtk
