@@ -339,3 +339,48 @@ Practical lesson, and a companion to §12: **counting green checks does not tell
 the run passed.** Compare the set of jobs that ran against the set you expected.
 Since `build_andium.yml` is `if: false` upstream (§8), the LTS macOS line is not
 built for a submission anyway.
+
+## 20. VTK 9.7.0 is refused, on measurement
+
+VTK 9.7.0 (2026-08-15) is the current stable release and VTK 9.6 is end-of-life —
+there will be no 9.6.3. We are nevertheless pinned to `>= 9.6, < 9.7`, because 9.7.0
+removes the only signal this extension has for truncated legacy ASCII files.
+
+Measured with a standalone probe linked against each version in turn, reading
+`test/data/synthetic/truncated.vtk` (header declares `POINTS 27`, file ends after 4):
+
+| | VTK 9.6.2 | VTK 9.7.0 |
+|---|---|---|
+| vtkOutputWindow message | `WARN| Error reading ascii data. Possible mismatch of datasize with declaration.` | **none** |
+| `GetErrorCode()` | `0 (Success)` | `0 (Success)` |
+| points returned | 27 | 27 |
+| bounds | `-1.56682e+06` (uninitialised) | `0..1` (zero-filled) |
+
+`GetErrorCode()` is Success in both — it has never been trustworthy here, which is
+why `src/vtk/vtk_error_scope.cpp` captures `vtkOutputWindow` instead. Under 9.7.0
+there is nothing left to capture, so `ATTACH` succeeds and returns 27 points, 23 of
+which were never in the file. `test/sql/attach_errors.test:14` catches this.
+
+Scope, from the same probe:
+
+* Affected: malformed legacy **ASCII** data — `truncated.vtk`, `bad_ascii_nan.vtk`.
+* Not affected: valid files (`uGridEx.vtk`, `office.binary.vtk` read identically in
+  both), unrecognised file types, and **XML** truncation, which 9.7.0 still reports.
+
+This is the same shape as the VTK 9.1 appended-data trap in §15 and the reason the
+floor exists at all. `cmake/DuckVTKFindVTK.cmake` therefore has a hard upper bound
+as well as a lower one, and it is a `FATAL_ERROR` rather than a warning because the
+failure it prevents is silent.
+
+Other 9.7.0 facts confirmed while evaluating it, none of which changed the verdict:
+
+* It configures and builds cleanly with our exact renderless/minimal module set.
+* The transitive closure grows by exactly one library, `vtkCommonCache`, pulled in
+  as a `PRIVATE_DEPENDS` of `FiltersCore`.
+* `VTK_USE_PCH` is new and defaults to `ON`; the `vtkArrayBulkInstantiate_*` TUs hold
+  ~1.4 GB RSS each, so `-j8` OOMs on a 15 GB machine where `-j4` is fine.
+* Its tarball SHA512 was verified independently:
+  `a60c0a76...faf82ea71` for `VTK-9.7.0.tar.gz` (58,568,819 bytes).
+
+**To lift the ceiling**, build the candidate VTK, point the extension at it, and
+require `test/sql/attach_errors.test` to pass. Do not raise it on release notes alone.

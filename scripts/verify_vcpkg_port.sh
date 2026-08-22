@@ -27,7 +27,12 @@ cd "$REPO_ROOT"
 # duckdb/community-extensions/.github/workflows/build.yml.
 VCPKG_COMMIT="${1:-84bab45d415d22042bd0b9081aea57f362da3f35}"
 VCPKG_ROOT="${VCPKG_ROOT:-$HOME/.cache/duck-vtk-vcpkg}"
-TRIPLET="${VCPKG_TARGET_TRIPLET:-x64-linux}"
+# x64-linux-RELEASE, not x64-linux. community-extensions builds with the release-only
+# triplets from extension-ci-tools/toolchains, and release-vs-debug is exactly the
+# dimension this port cares about: vtk-minimal sets VCPKG_BUILD_TYPE release because a
+# triplet that builds both exhausted the runner's disk mid-compile. Verifying against a
+# triplet nobody ships was checking the wrong thing.
+TRIPLET="${VCPKG_TARGET_TRIPLET:-x64-linux-release}"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m  ok\033[0m %s\n' "$*"; }
@@ -71,6 +76,7 @@ info "2/4  build the vtk-minimal overlay port on its own"
 # failure, instead of surfacing later as a confusing find_package error.
 "$VCPKG_ROOT/vcpkg" install "vtk-minimal:${TRIPLET}" \
   --overlay-ports=./vcpkg_ports \
+  --overlay-triplets=./extension-ci-tools/toolchains \
   --x-install-root="$VCPKG_ROOT/installed" \
   >/tmp/vcpkg_vtk.log 2>&1 \
   || { echo "--- last 60 lines ---"; tail -60 /tmp/vcpkg_vtk.log; die "vtk-minimal failed to build under vcpkg"; }

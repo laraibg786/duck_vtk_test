@@ -59,6 +59,40 @@
 # keeps the door open to lowering this floor later.
 set(DUCK_VTK_MIN_VERSION 9.6)
 
+# ...and an UPPER bound, which is unusual enough to justify at length.
+#
+# VTK 9.7.0 (2026-08-15) must NOT be used. It silently accepts malformed legacy
+# ASCII data that 9.6.2 reports, which removes this extension's only defence
+# against returning fabricated rows.
+#
+# Measured with a standalone probe linked against each version in turn, reading
+# test/data/synthetic/truncated.vtk — a file whose header declares POINTS 27 but
+# which is cut off after 4:
+#
+#   VTK 9.6.2  vtkDataReader.cxx:1527 WARN| Error reading ascii data. Possible
+#              mismatch of datasize with declaration.
+#              GetErrorCode() = 0 (Success), 27 points, bounds -1.56682e+06 (garbage)
+#   VTK 9.7.0  (no message of any kind)
+#              GetErrorCode() = 0 (Success), 27 points, bounds 0..1 (zero-filled)
+#
+# GetErrorCode() is Success in BOTH — it has never been reliable here, which is
+# why src/vtk/vtk_error_scope.cpp captures vtkOutputWindow instead. That capture is
+# the entire mechanism, and under 9.7.0 there is nothing left to capture: the
+# ATTACH succeeds and hands back 27 points, 23 of which were never in the file.
+#
+# Same regression on test/data/synthetic/bad_ascii_nan.vtk. Valid files are
+# unaffected: uGridEx.vtk and office.binary.vtk read identically under both, and
+# XML truncation is still detected under 9.7.0.
+#
+# This is the same shape of defect as the VTK 9.1 appended-data trap documented
+# above, and it is why the floor exists at all. A silent wrong answer is the one
+# failure mode this project treats as unacceptable, so 9.7 is refused outright
+# rather than accepted with a warning.
+#
+# To lift this: verify that test/sql/attach_errors.test passes against the
+# candidate version, and raise the ceiling only if it does.
+set(DUCK_VTK_MAX_VERSION_EXCLUSIVE 9.7)
+
 # ---------------------------------------------------------------------------
 # Component set
 # ---------------------------------------------------------------------------
@@ -179,6 +213,24 @@ if(NOT VTK_FOUND)
     "\n"
     "If VTK is installed somewhere unusual, pass it explicitly:\n"
     "  make release EXT_FLAGS='-DVTK_DIR=/path/to/lib/cmake/vtk-9.6'\n")
+endif()
+
+# Refuse a VTK at or above the exclusive ceiling. Deliberately a hard error: the
+# failure it prevents is silent and produces wrong data, so a warning would be
+# read past.
+if(VTK_VERSION VERSION_GREATER_EQUAL ${DUCK_VTK_MAX_VERSION_EXCLUSIVE})
+  message(FATAL_ERROR
+    "duck_vtk: found VTK ${VTK_VERSION}, but this extension supports "
+    ">= ${DUCK_VTK_MIN_VERSION} and < ${DUCK_VTK_MAX_VERSION_EXCLUSIVE}.\n"
+    "\n"
+    "VTK 9.7 silently accepts truncated legacy ASCII files: it returns the number\n"
+    "of points the header DECLARED, zero-filling the ones that were never in the\n"
+    "file, and emits no message and sets no error code. VTK 9.6.2 reports\n"
+    "  'Error reading ascii data. Possible mismatch of datasize with declaration.'\n"
+    "for the same file, and capturing that message is how this extension refuses\n"
+    "corrupt input - see src/vtk/vtk_error_scope.cpp.\n"
+    "\n"
+    "Build a supported VTK with:  ./scripts/build_minimal_vtk.sh 9.6.2\n")
 endif()
 
 # Re-run as REQUIRED so the failure mode is a clear CMake error rather than a

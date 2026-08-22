@@ -120,10 +120,14 @@ jobs:
           vtk_dir=$(./scripts/build_minimal_vtk.sh)
           echo "VTK_DIR=$vtk_dir" >> "$GITHUB_ENV"
 
+      # Keyed on run_id rather than sha so the entry is unique per run (a cache key
+      # that already exists is never overwritten), with restore-keys doing the actual
+      # hit. Note the exact key deliberately never matches on restore — that is how
+      # actions/cache is meant to be used for an append-only cache like ccache.
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
-          key: ccache-quick-${{ matrix.duckdb_tag }}-${{ matrix.cxx }}-${{ github.sha }}
+          key: ccache-quick-${{ matrix.duckdb_tag }}-${{ matrix.cxx }}-${{ github.run_id }}
           restore-keys: ccache-quick-${{ matrix.duckdb_tag }}-${{ matrix.cxx }}-
 
       - name: Build (bootstrap fetches duckdb itself)

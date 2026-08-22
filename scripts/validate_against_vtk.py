@@ -42,7 +42,7 @@ except ImportError:
     sys.exit(
         "FATAL: python 'vtk' not importable.\n"
         "This harness IS the correctness oracle; without it there is nothing to\n"
-        "validate against. Install it with:  ./scripts/setup_dev_env.sh\n"
+        "validate against. Install it with:  make configure\n"
         "Do NOT commit test expectations that were never checked against an oracle."
     )
 

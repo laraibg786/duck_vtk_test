@@ -3,7 +3,7 @@
 
 Run after `make install` (which puts the extension where DuckDB finds it by name):
 
-    uvx --with duckdb==1.5.4 python scripts/python_smoke.py
+    make python-smoke      # pins the duckdb wheel to DUCKDB_VERSION_TAG
 
 Worth having separately from the CLI tests: the Python client is how most users
 will actually reach this extension, it takes a different code path to load
