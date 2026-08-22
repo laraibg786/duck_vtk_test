@@ -384,3 +384,37 @@ Other 9.7.0 facts confirmed while evaluating it, none of which changed the verdi
 
 **To lift the ceiling**, build the candidate VTK, point the extension at it, and
 require `test/sql/attach_errors.test` to pass. Do not raise it on release notes alone.
+
+## 21. A captured stdout stream can blow up the environment (E2BIG)
+
+Self-inflicted, but the failure mode is worth knowing because the error message
+points nowhere near the cause.
+
+`scripts/build_minimal_vtk.sh` documents that stdout carries exactly one line, the
+cmake config directory, so callers can do `VTK_DIR=$(build_minimal_vtk.sh)` and let
+`set -e` abort on failure. Progress output was moved to stderr for this — but
+**cmake's own stdout was not**, and only the cache-MISS path reaches cmake. Against a
+warm `~/.local/vtk-9.6.2` the script returns early and prints one line, so this could
+not reproduce locally.
+
+Two call sites, two different symptoms from the same cause:
+
+* GitHub Actions (`quick`): the multi-line value went into `$GITHUB_ENV` —
+  `Unable to process file command 'env' successfully.`
+  `Invalid format '-- The CXX compiler identification is GNU 14.2.0'`
+* Docker (`cold boot`): `export VTK_DIR=<megabytes>` pushed the environment past
+  `MAX_ARG_STRLEN`, so every subsequent `execve` failed —
+  `/usr/bin/tail: Argument list too long`, then `rm`, then
+  `make: *** [ci-verify] Error 126`. Exit 126 is "cannot execute", which reads like
+  a permissions problem and sent the first diagnosis in the wrong direction.
+
+Lessons:
+
+1. If a script's contract is "stdout is data", every command in it must be audited,
+   not just the ones that obviously print. `cmake`, `make` and `git` all write
+   progress to stdout.
+2. Test the SLOW path. A contract that only holds on the early-return branch is not
+   a contract. The verification that mattered was running the script into a fresh
+   prefix so configure/build/install actually executed.
+3. `Argument list too long` from a command that plainly exists means an oversized
+   environment, not a missing binary.
