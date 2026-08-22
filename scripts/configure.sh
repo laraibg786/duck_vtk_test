@@ -19,17 +19,30 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# These MUST match the values in the Makefile and .gitmodules. `make check-pin`
-# cross-checks the duckdb one against the installed CLI.
-DUCKDB_SHA="${DUCKDB_SHA:-08e34c447bae34eaee3723cac61f2878b6bdf787}"   # v1.5.4
-CITOOLS_SHA="${CITOOLS_SHA:-b777c70d30942cca5bef62d6d4fa23a13362f398}"
+# NOTE: no hardcoded dependency SHAs live here any more.
+#
+# There used to be two, and one had rotted: CITOOLS_SHA said b777c70d while the
+# recorded gitlink said 72e76e99. Because fetch_pinned() below did `rm -rf` on any
+# tree whose HEAD differed from its hardcoded value, `make configure` DELETED a
+# correctly-pinned extension-ci-tools and replaced it with a stale one — so the
+# documented setup command left you building with a different
+# duckdb_extension.Makefile than CI uses.
+#
+# scripts/bootstrap_deps.sh already derives both SHAs from the gitlinks
+# (`git ls-tree HEAD`), which is the one source of truth. This script now calls it
+# instead of keeping a second, drifting copy of the same logic.
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m  ok\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 
-export PATH="/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:$PATH"
+# Only the user-scoped bin dir. A previous version also PREPENDED
+# /home/linuxbrew/.linuxbrew/bin, which silently decided which cmake, ninja, git and
+# duckdb the setup used on any machine that happens to have Linuxbrew — including
+# picking a Homebrew toolchain over the system one. That is precisely the libstdc++
+# ABI mismatch that building VTK from source exists to avoid.
+export PATH="$HOME/.local/bin:$PATH"
 
 # ---------------------------------------------------------------------------
 info "1/5  Build toolchain"
@@ -63,26 +76,35 @@ ok "compiler: $($CXX_BIN --version 2>&1 | head -1)"
 # ---------------------------------------------------------------------------
 info "2/5  Submodules at pinned commits"
 # ---------------------------------------------------------------------------
-fetch_pinned() {
-  local dir="$1" url="$2" sha="$3"
-  if [[ -d "$dir/.git" ]] && [[ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" == "$sha" ]]; then
-    ok "$dir already at ${sha:0:10}"
+./scripts/bootstrap_deps.sh || die "bootstrap_deps.sh failed"
+
+# bootstrap_deps.sh returns early once the marker file exists, so it will not correct
+# a dependency that is PRESENT but checked out at the wrong commit. `make configure`
+# is the "put my checkout into the right state" command, so verify against the
+# gitlink and correct if needed.
+gitlink_sha() { git ls-tree HEAD "$1" 2>/dev/null | awk '$2 == "commit" { print $3 }'; }
+
+verify_pin() {
+  local dir="$1" url="$2" want have
+  want="$(gitlink_sha "$dir")"
+  if [[ -z "$want" ]]; then
+    warn "$dir has no recorded gitlink; leaving it alone"
     return 0
   fi
-  info "fetching $dir @ ${sha:0:10} (shallow)"
-  rm -rf "$dir"
-  mkdir -p "$dir"
-  git -C "$dir" init -q
-  git -C "$dir" remote add origin "$url"
-  # Fetching the single pinned commit rather than cloning all history: duckdb's
-  # full history is ~1 GB.
-  git -C "$dir" fetch -q --depth 1 origin "$sha" || die "could not fetch $sha from $url"
-  git -C "$dir" checkout -q FETCH_HEAD
-  ok "$dir at $(git -C "$dir" rev-parse --short HEAD) ($(du -sh "$dir" | cut -f1))"
+  have="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo none)"
+  if [[ "$have" == "$want" ]]; then
+    ok "$dir at ${want:0:10} (matches the gitlink)"
+    return 0
+  fi
+  info "$dir is at ${have:0:10} but the repo pins ${want:0:10}; correcting"
+  git -C "$dir" fetch -q --depth 1 origin "$want" \
+    || die "could not fetch $want for $dir from $url"
+  git -C "$dir" checkout -q FETCH_HEAD || die "could not check out $want in $dir"
+  ok "$dir now at $(git -C "$dir" rev-parse --short HEAD)"
 }
 
-fetch_pinned duckdb https://github.com/duckdb/duckdb "$DUCKDB_SHA"
-fetch_pinned extension-ci-tools https://github.com/duckdb/extension-ci-tools "$CITOOLS_SHA"
+verify_pin duckdb https://github.com/duckdb/duckdb
+verify_pin extension-ci-tools https://github.com/duckdb/extension-ci-tools
 
 # The formatting configs are symlinks into the submodule; they only resolve once
 # it is present.

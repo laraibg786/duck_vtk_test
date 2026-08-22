@@ -69,7 +69,13 @@ case "$yaml_rc" in
 esac
 
 step "No unfilled TODOs in the descriptor"
-if grep -nE "TODO" "$DESC" | grep -vE "^\s*#" | grep -q .; then
+# The anchor must account for the "NN:" prefix that `grep -n` adds, or the
+# comment filter matches nothing and every explanatory comment mentioning TODO
+# counts as an unfilled placeholder. It was `^\s*#`, which meant this check
+# would have stayed RED even after all three values were filled in — while the
+# display line below (correctly anchored) printed nothing, making the failure
+# look like a bug in this script.
+if grep -nE "TODO" "$DESC" | grep -vE "^[0-9]+:\s*#" | grep -q .; then
   grep -nE "TODO" "$DESC" | grep -vE "^[0-9]+:\s*#" | sed 's/^/       /'
   bad "the descriptor still has TODO placeholders (repo.github, repo.ref, maintainers)"
 else
@@ -90,7 +96,11 @@ step "Excluded platforms agree between descriptor and CI"
 # excludes windows_amd64 because DuckDB v1.4.5's own sqlite3_api_wrapper does not
 # compile under the current MSVC. An earlier version of this check unioned every
 # exclude_archs in the file, which cannot express that and would fail here.
-desc_ex=$(grep -oP 'excluded_platforms:\s*"\K[^"]+' "$DESC" | tr ';' '\n' | sort -u)
+# NOTE: sed, not `grep -oP`. BSD grep (macOS) has no -P, so every -oP in this
+# script used to yield an empty string there — and an empty-vs-empty comparison
+# PASSES. The script reported success on macOS while checking nothing at all.
+desc_ex=$(sed -n 's/.*excluded_platforms:[[:space:]]*"\([^"]*\)".*/\1/p' "$DESC" \
+          | tr ';' '\n' | sort -u)
 ci_default_ex=$(${YAML_PY:-false} - "$CI" <<'PY' 2>/dev/null
 import sys, yaml
 DEFAULT_LINE = "v1.5.5"
@@ -150,7 +160,7 @@ while read -r mod; do
   grep -q "VTK_MODULE_ENABLE_VTK_${mod}=YES" vcpkg_ports/vtk-minimal/portfile.cmake \
     || missing="$missing $mod"
 done < <(sed -n '/set(DUCK_VTK_REQUIRED_COMPONENTS/,/^)/p' cmake/DuckVTKFindVTK.cmake \
-         | grep -oE '^\s+[A-Z][A-Za-z]+' | tr -d ' ')
+         | sed -n 's/^[[:space:]][[:space:]]*\([A-Z][A-Za-z]*\).*/\1/p')
 if [[ -n "$missing" ]]; then
   bad "required components not enabled in the vcpkg port:$missing"
 else
@@ -164,10 +174,11 @@ step "vcpkg port and local build script enable the same VTK modules"
 # Require the -D prefix: both files also NAME modules in comments explaining why
 # they are deliberately not enabled (IOGeometry), and matching those would report a
 # difference that does not exist.
-port_mods=$(grep -oP '\-DVTK_MODULE_ENABLE_VTK_\K[A-Za-z]+(?==YES)' \
-            vcpkg_ports/vtk-minimal/portfile.cmake | sort -u)
-script_mods=$(grep -oP '\-DVTK_MODULE_ENABLE_VTK_\K[A-Za-z]+(?==YES)' \
-              scripts/build_minimal_vtk.sh | sort -u)
+vtk_modules() {
+  sed -n 's/.*-DVTK_MODULE_ENABLE_VTK_\([A-Za-z]*\)=YES.*/\1/p' "$1" | sort -u
+}
+port_mods=$(vtk_modules vcpkg_ports/vtk-minimal/portfile.cmake)
+script_mods=$(vtk_modules scripts/build_minimal_vtk.sh)
 if [[ "$port_mods" == "$script_mods" ]]; then
   ok "$(wc -l <<<"$port_mods") modules, identical in both"
 else
@@ -175,17 +186,45 @@ else
   diff <(echo "$port_mods") <(echo "$script_mods") | sed 's/^/       /'
 fi
 
-step "Submodule pin is recorded"
-if make -s check-pin >/tmp/submit_pin.log 2>&1; then
-  ok "$(grep -m1 'derived version tag' /tmp/submit_pin.log || echo 'pin recorded')"
+step "VTK build options that must agree, do"
+# The module-enable comparison above misses options that change ABI or semantics.
+# VTK_USE_64BIT_IDS is the one that matters most: sizeof(vtkIdType) underpins the
+# exact-integer behaviour and is reported by vtk_build_info(). It was set in
+# build_minimal_vtk.sh but left to VTK's default in the port that actually ships.
+opt_mismatch=""
+for opt in VTK_USE_64BIT_IDS VTK_GROUP_ENABLE_Rendering VTK_GROUP_ENABLE_Qt \
+           VTK_BUILD_TESTING VTK_WRAP_PYTHON; do
+  p=$(sed -n "s/.*-D${opt}=\([A-Za-z0-9]*\).*/\1/p" vcpkg_ports/vtk-minimal/portfile.cmake | head -1)
+  s=$(sed -n "s/.*-D${opt}=\([A-Za-z0-9]*\).*/\1/p" scripts/build_minimal_vtk.sh | head -1)
+  if [[ "$p" != "$s" ]]; then
+    opt_mismatch="$opt_mismatch $opt(port='${p:-unset}' script='${s:-unset}')"
+  fi
+done
+if [[ -n "$opt_mismatch" ]]; then
+  bad "VTK options differ between the port and build_minimal_vtk.sh:$opt_mismatch"
 else
-  sed 's/^/       /' /tmp/submit_pin.log
+  ok "VTK_USE_64BIT_IDS and the group toggles agree"
+fi
+
+step "Submodule pin is recorded"
+# Guarded on duckdb/ already existing. `make check-pin` includes
+# extension-ci-tools/makefiles/duckdb_extension.Makefile, and on a fresh clone that
+# include triggers scripts/bootstrap_deps.sh — a ~500 MB fetch, from a check that
+# advertises itself as offline and instant.
+PIN_LOG="$(mktemp)"
+trap 'rm -f "$PIN_LOG"' EXIT
+if [[ ! -f duckdb/CMakeLists.txt ]]; then
+  warn "duckdb/ is not materialised; skipped the pin check (run 'make configure' first)"
+elif make -s check-pin >"$PIN_LOG" 2>&1; then
+  ok "$(grep -m1 'derived version tag' "$PIN_LOG" || echo 'pin recorded')"
+else
+  sed 's/^/       /' "$PIN_LOG"
   bad "check-pin failed — the submodule commit is not in DUCKDB_KNOWN_VERSIONS"
 fi
 
 step "Extension name is not already taken upstream"
 if command -v curl >/dev/null 2>&1; then
-  name=$(grep -oP '^\s+name:\s*\K\S+' "$DESC" | head -1)
+  name=$(sed -n 's/^[[:space:]]*name:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$DESC" | head -1)
   code=$(curl -sS -o /dev/null -m 15 -w "%{http_code}" \
     "https://raw.githubusercontent.com/duckdb/community-extensions/main/extensions/${name}/description.yml" 2>/dev/null || echo "000")
   case "$code" in

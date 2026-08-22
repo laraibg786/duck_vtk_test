@@ -14,14 +14,24 @@
 # Every step is loud about which stage failed, because "the Docker build broke" is
 # useless on its own.
 
-set -uo pipefail
+# -e matters here. Without it, every unguarded command merely printed its error and
+# the script carried on to announce success — which is how stage 8 came to be unable
+# to fail at all.
+set -euo pipefail
+
+# Logs go to mktemp files rather than fixed /tmp names: this script also runs on
+# developer workstations, where a predictable /tmp/build.log is a symlink-attack
+# target.
+_LOGS=()
+newlog() { local f; f=$(mktemp); _LOGS+=("$f"); printf %s "$f"; }
+cleanup() { rm -f "${_LOGS[@]:-}"; }
+trap cleanup EXIT
 
 STAGE=""
 stage() { STAGE="$1"; printf '\n\033[1;34m########## %s ##########\033[0m\n' "$1"; }
 die() { printf '\n\033[1;31m[FAILED at: %s]\033[0m %s\n' "$STAGE" "${1:-}" >&2; exit 1; }
 
 : "${DUCKDB_VERSION_TAG:=v1.5.5}"
-: "${VTK_MODE:=source}"
 : "${JOBS:=$(nproc)}"
 
 export CCACHE_DIR="${CCACHE_DIR:-/ccache}"
@@ -32,7 +42,6 @@ echo "cmake   : $(cmake --version | head -1)"
 echo "ninja   : $(ninja --version)"
 echo "gcc     : $(gcc --version | head -1)"
 echo "duckdb  : $DUCKDB_VERSION_TAG"
-echo "vtk mode: $VTK_MODE"
 echo "jobs    : $JOBS"
 # Deliberately assert the absence of developer state, so this cannot silently
 # become a warm build that proves nothing.
@@ -58,21 +67,19 @@ echo "submodule dirs after a plain clone:"
 printf '  duckdb/            : %s entries\n' "$(ls -A duckdb 2>/dev/null | wc -l)"
 printf '  extension-ci-tools/: %s entries\n' "$(ls -A extension-ci-tools 2>/dev/null | wc -l)"
 
-stage "2. VTK"
-if [[ "$VTK_MODE" == "apt" ]]; then
-  VTK_CMAKE_DIR="$(ls -d /usr/lib/*/cmake/vtk-* 2>/dev/null | head -1)"
-  [[ -n "$VTK_CMAKE_DIR" ]] || die "VTK_MODE=apt but no packaged VTK found"
-  echo "using packaged VTK: $VTK_CMAKE_DIR"
-  export VTK_DIR="$VTK_CMAKE_DIR"
-else
-  echo "building minimal VTK from source (this is the slow step)"
-  JOBS="$JOBS" ./scripts/build_minimal_vtk.sh >/tmp/vtk_build.log 2>&1 \
-    || { tail -40 /tmp/vtk_build.log; die "minimal VTK build failed"; }
-  VTK_CMAKE_DIR="$(ls -d "$HOME"/.local/vtk-*/lib/cmake/vtk-* 2>/dev/null | head -1)"
-  [[ -n "$VTK_CMAKE_DIR" ]] || die "VTK built but no cmake config found"
-  echo "built: $VTK_CMAKE_DIR"
-  export VTK_DIR="$VTK_CMAKE_DIR"
+stage "2. Build minimal VTK from source"
+# There is deliberately no "use the distro package" mode. Ubuntu ships VTK 9.1,
+# which parses no <AppendedData> section yet reports success — the silent-empty-mesh
+# trap documented in cmake/DuckVTKFindVTK.cmake. The 9.6 floor rejects it outright,
+# so such a mode could only ever fail; it was removed rather than left to rot.
+echo "building minimal VTK from source (this is the slow step)"
+_vtk_log=$(newlog)
+if ! VTK_DIR=$(JOBS="$JOBS" ./scripts/build_minimal_vtk.sh 2>"$_vtk_log"); then
+  tail -40 "$_vtk_log"
+  die "minimal VTK build failed"
 fi
+export VTK_DIR
+echo "built: $VTK_DIR"
 
 stage "3. Build (bootstrap must obtain duckdb + ci-tools by itself)"
 # A mirror only changes WHERE the pinned commit comes from; the SHA and the
@@ -93,14 +100,16 @@ git config --global --add safe.directory '*' 2>/dev/null || true
 export DUCKDB_GIT_MIRROR CITOOLS_GIT_MIRROR DUCKDB_SHA CITOOLS_SHA
 # No `make configure` on purpose: `make release` alone has to work, because that is
 # all the community-extensions CI runs.
-make release -j"$JOBS" >/tmp/build.log 2>&1 || { tail -60 /tmp/build.log; die "make release failed"; }
-grep -E "duck_vtk: (VTK_VERSION|StorageExtension::Register|extra flags)" /tmp/build.log || true
+_build_log=$(newlog)
+make release -j"$JOBS" >"$_build_log" 2>&1 || { tail -60 "$_build_log"; die "make release failed"; }
+grep -E "duck_vtk: (VTK_VERSION|StorageExtension::Register|extra flags)" "$_build_log" || true
 EXT=build/release/extension/vtk/vtk.duckdb_extension
 [[ -f "$EXT" ]] || die "extension artefact missing"
 echo "artefact: $(stat -c%s "$EXT") bytes"
 
 stage "4. Version stamp matches what we built against"
-built_for=$(./build/release/duckdb -noheader -list -c "SELECT version();" 2>/dev/null)
+built_for=$(./build/release/duckdb -noheader -list -c "SELECT version();" 2>/dev/null) \
+  || die "could not query the freshly built duckdb"
 echo "duckdb built: $built_for (expected $DUCKDB_VERSION_TAG)"
 [[ "$built_for" == "$DUCKDB_VERSION_TAG" ]] || die "version mismatch: $built_for != $DUCKDB_VERSION_TAG"
 
@@ -112,15 +121,47 @@ stage "5. Load + ATTACH"
   SELECT num_points || '/' || num_cells FROM m.vtk_info;
 " || die "load/ATTACH failed"
 
-stage "6. sqllogictest"
-./build/release/test/unittest --test-dir . "[sql]" 2>&1 | tail -4
-./build/release/test/unittest --test-dir . "[sql]" >/dev/null 2>&1 || die "sqllogictest failed"
+# Each suite below runs EXACTLY ONCE. Previously each ran twice — once piped to
+# `tail` for the summary (which discards the exit status) and once to /dev/null
+# purely to recover that status. That doubled the cold-boot test time, and worse,
+# the run whose output you read was not the run that decided pass/fail.
+stage "6. Corpus integrity"
+# The cold boot works from a fresh clone, so this also proves the corpus survived
+# git transfer intact.
+(cd test/data && sha256sum -c --quiet MANIFEST.sha256) || die "corpus checksum mismatch"
+echo "corpus verified"
 
-stage "7. SQL invariants"
-./scripts/run_invariants.sh 2>&1 | tail -2
-./scripts/run_invariants.sh >/dev/null 2>&1 || die "invariants failed"
+stage "7. sqllogictest"
+_sql_log=$(newlog)
+if ! ./build/release/test/unittest --test-dir . "[sql]" >"$_sql_log" 2>&1; then
+  tail -40 "$_sql_log"; die "sqllogictest failed"
+fi
+tail -4 "$_sql_log"
 
-stage "8. API compatibility shim"
-./scripts/check_api_compat.sh ./duckdb 2>&1 | tail -3
+stage "8. SQL invariants"
+_inv_log=$(newlog)
+if ! ./scripts/run_invariants.sh >"$_inv_log" 2>&1; then
+  tail -40 "$_inv_log"; die "invariants failed"
+fi
+tail -2 "$_inv_log"
+
+stage "9. In-memory parse path (the route remote files take)"
+# Not covered by stage 7: DUCK_VTK_FORCE_MEMORY_READ reroutes local reads through
+# the in-memory parser, which is otherwise only reachable with httpfs loaded and so
+# went entirely untested.
+_mem_log=$(newlog)
+if ! DUCK_VTK_FORCE_MEMORY_READ=1 ./build/release/test/unittest --test-dir . "[sql]" >"$_mem_log" 2>&1; then
+  tail -40 "$_mem_log"; die "in-memory read path failed"
+fi
+tail -4 "$_mem_log"
+
+stage "10. API compatibility shim"
+# This used to be an unchecked `| tail -3`, so the cold boot announced success even
+# when the 1.4/1.5 shim no longer compiled — in the one job that gates submission.
+_api_log=$(newlog)
+if ! ./scripts/check_api_compat.sh ./duckdb >"$_api_log" 2>&1; then
+  tail -20 "$_api_log"; die "API compatibility shim failed"
+fi
+tail -3 "$_api_log"
 
 printf '\n\033[1;32m########## COLD-BOOT BUILD AND TEST SUCCEEDED ##########\033[0m\n'

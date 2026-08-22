@@ -4,9 +4,12 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 EXT_NAME=vtk
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
-# We link the system/Homebrew VTK via find_package rather than vcpkg, so there is
-# no vcpkg.json in this repo and VCPKG_TOOLCHAIN_PATH is intentionally unset.
-# See docs/design/03-architecture-and-roadmap.md §5 for why.
+# VTK comes from one of two places, and both are supported deliberately:
+#   * LOCAL builds resolve it with find_package — a source build under ~/.local, a
+#     Homebrew bottle, or an explicit -DVTK_DIR=... (see cmake/DuckVTKFindVTK.cmake).
+#   * The community-extensions pipeline resolves it through vcpkg, from the
+#     vtk-minimal overlay port in vcpkg_ports/ declared by ./vcpkg.json.
+# `make ci-verify-vcpkg` exercises the second path locally.
 
 # Use Ninja when available: DuckDB's build is large and Ninja's dependency
 # handling makes incremental extension rebuilds substantially faster.
@@ -15,21 +18,25 @@ ifneq ($(shell command -v ninja 2>/dev/null),)
 	GEN ?= ninja
 endif
 
-# Enable the C++ (Catch2) unit tests.
+# NOTE: there is deliberately no -DENABLE_UNITTEST_CPP_TESTS=TRUE here.
 #
-# extension-ci-tools hardcodes -DENABLE_UNITTEST_CPP_TESTS=FALSE into its
-# BUILD_FLAGS, so test/cpp/*.cpp would be silently ignored. EXT_FLAGS is appended
-# AFTER that in the cmake command line, so repeating the option here wins.
-# Without this, the L1 unit tests (including the int64 precision test, which is
-# the most important single test in the project) never run.
-EXT_FLAGS += -DENABLE_UNITTEST_CPP_TESTS=TRUE
+# A previous version set it, with a comment claiming EXT_FLAGS lands after
+# extension-ci-tools' own -DENABLE_UNITTEST_CPP_TESTS=FALSE and therefore wins.
+# That is backwards: duckdb_extension.Makefile expands ${EXT_FLAGS} EARLIER in
+# BUILD_FLAGS, so upstream's FALSE is the later flag and takes effect. Confirmed by
+# `make -n release` (ours at token 61, upstream's at 72) and by
+# build/release/CMakeCache.txt reporting ENABLE_UNITTEST_CPP_TESTS:BOOL=FALSE.
+#
+# It was moot regardless: there are no C++ unit tests. The comment also claimed the
+# int64 precision test lived there; it is SQL, in test/sql/precision.test. Coverage
+# lives in test/sql/*.test and scripts/run_invariants.sh.
 
 # Stamp the correct DuckDB version into the extension's metadata footer.
 #
 # Every .duckdb_extension records the DuckDB version it was built for, and LOAD
 # refuses a mismatch. That version comes from `git describe` on the duckdb
 # submodule. We fetch the submodule shallowly at a bare commit (see
-# scripts/configure.sh), so it carries NO TAGS and git describe yields
+# scripts/bootstrap_deps.sh), so it carries NO TAGS and git describe yields
 # nothing — the build then stamps the fallback "v0.0.1" and the extension fails
 # to load with:
 #
@@ -67,6 +74,19 @@ OVERRIDE_GIT_DESCRIBE ?= $(DUCKDB_VERSION_TAG)
 # what they build — it only decides what a LOCAL build produces. These are the
 # versions that must compile; `make check-api-compat` is what proves it.
 COMMUNITY_DUCKDB_VERSIONS := v1.5.5 v1.4.5
+
+# Extension version, derived from the submission descriptor so there is ONE
+# authority for it.
+#
+# Three copies had already drifted: description.yml and vcpkg.json said 0.1.0 while
+# CMakeLists.txt's fallback said 0.1.0-dev, so vtk_build_info() reported a version
+# that matched nothing we would submit. Reading it from the descriptor is the same
+# trick duckhts uses, and it means a release is a one-line edit.
+DUCK_VTK_VERSION := $(shell sed -n 's/^[[:space:]]*version:[[:space:]]*//p' \
+	$(PROJ_DIR)community-extension/description.yml | head -1)
+ifneq ($(DUCK_VTK_VERSION),)
+	EXT_FLAGS += -DDUCK_VTK_VERSION=$(DUCK_VTK_VERSION)
+endif
 
 # Pin the C++ standard explicitly.
 #
@@ -132,13 +152,16 @@ EXT_DEBUG_PATH   := build/debug/extension/$(EXT_NAME)/$(EXT_NAME).duckdb_extensi
 .PHONY: setup data smoke oracle invariants check phase0 print-vtk check-pin
 
 ## Alias for `configure`, kept because `make setup` is a common reflex.
-## There is deliberately only ONE setup implementation (scripts/configure.sh);
-## the previous scripts/configure.sh was a second, slowly diverging copy.
+## There is deliberately only ONE setup implementation, scripts/configure.sh.
 setup: configure
 
-## Verify the committed test-data corpus against its checksum manifest
+## Verify the committed test-data corpus against its checksum manifest.
+## `sha256sum -c` exits 1 on a mismatch and that status MUST reach make. An
+## earlier version piped it through `grep -v ": OK$"`, which replaced the exit
+## status with grep's — so a corrupted corpus exited 0 and this check could
+## never fail. `--quiet` prints only the FAILED lines, so no filtering is needed.
 data:
-	cd test/data && sha256sum -c MANIFEST.sha256 | grep -v ': OK$' || echo "all corpus files verified"
+	@cd test/data && sha256sum -c --quiet MANIFEST.sha256 && echo "all corpus files verified"
 
 ## Phase 0 ABI spike: prove we can link and run against the installed VTK
 ## BEFORE relying on it from inside DuckDB. See scripts/phase0_spike/.
@@ -300,26 +323,18 @@ CI_MIRROR_ARGS = $(if $(CI_VERIFY_NO_MIRROR),,\
 ci-verify: ci-image
 	docker volume create $(DOCKER_CCACHE) >/dev/null
 	docker run --rm \
-		-v $(PROJ_DIR):/src:ro \
+		-v "$(PROJ_DIR)":/src:ro \
 		-v $(DOCKER_CCACHE):/ccache \
 		-e DUCKDB_VERSION_TAG=$(DUCKDB_VERSION_TAG) \
 		-e DUCKDB_SHA=$(DUCKDB_SUBMODULE_SHA) \
-		-e VTK_MODE=source \
 		$(CI_MIRROR_ARGS) \
 		$(DOCKER_IMAGE_CI)
 
-## Same, but against the distro's packaged VTK. Proves we are not secretly tied to
-## VTK 9.6 — Ubuntu's libvtk9-dev is an older 9.x.
-ci-verify-apt:
-	docker build -f docker/Dockerfile.ci -t $(DOCKER_IMAGE_CI)-apt \
-		--build-arg VTK_MODE=apt --build-arg DUCKDB_VERSION_TAG=$(DUCKDB_VERSION_TAG) .
-	docker volume create $(DOCKER_CCACHE) >/dev/null
-	docker run --rm \
-		-v $(PROJ_DIR):/src:ro \
-		-v $(DOCKER_CCACHE):/ccache \
-		-e DUCKDB_VERSION_TAG=$(DUCKDB_VERSION_TAG) \
-		-e VTK_MODE=apt \
-		$(DOCKER_IMAGE_CI)-apt
+# There was a `ci-verify-apt` target here that built against the distro's
+# libvtk9-dev to "prove we are not secretly tied to VTK 9.6". We are tied to it, on
+# purpose — Ubuntu ships 9.1, which returns empty meshes for appended-data XML while
+# reporting success. DUCK_VTK_MIN_VERSION is 9.6, so the target could not have
+# succeeded; it is removed rather than kept as a claim that is now false.
 
 ## Build through vcpkg exactly as community-extensions does, using our vtk-minimal
 ## overlay port. THE most important pre-submission check: it is the only thing that
@@ -330,9 +345,9 @@ ci-verify-vcpkg:
 ## Drop into a shell in the CI container to debug a failure.
 ci-shell: ci-image
 	docker run --rm -it --entrypoint /bin/bash \
-		-v $(PROJ_DIR):/src:ro -v $(DOCKER_CCACHE):/ccache $(DOCKER_IMAGE_CI)
+		-v "$(PROJ_DIR)":/src:ro -v $(DOCKER_CCACHE):/ccache $(DOCKER_IMAGE_CI)
 
-.PHONY: ci-image ci-verify ci-verify-apt ci-verify-vcpkg ci-shell
+.PHONY: ci-image ci-verify ci-verify-vcpkg ci-shell
 
 ## Pre-submission paperwork gate for DuckDB community extensions. Runs offline in
 ## about a second; does not build. Pair with `make ci-verify` and `make check`.

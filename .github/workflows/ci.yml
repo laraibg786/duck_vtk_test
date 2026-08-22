@@ -22,6 +22,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege. Nothing here writes to the repo: no releases, no comments, no
+# package pushes. actions/upload-artifact inside the reusable workflow uses its own
+# token and is unaffected. Without this block every job would run with whatever the
+# repository default is, which on many repos is still read-write on contents.
+permissions:
+  contents: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # 1. Fast feedback: compiler matrix (g++/clang), the LTS line, the version shim,
@@ -36,6 +43,11 @@ jobs:
   quick:
     name: quick (${{ matrix.duckdb_tag }} / ${{ matrix.cxx }})
     runs-on: ubuntu-24.04
+    # A cold VTK cache makes this ~25 min; the default job limit is 6 HOURS. The
+    # public vcpkg binary cache is read-only for us (docs/CI_NOTES.md §7), so VTK is
+    # built from source far more often than one would like, and a hung build is a
+    # realistic failure mode worth bounding.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -92,12 +104,21 @@ jobs:
           key: vtk-9.6.2-${{ runner.os }}-${{ hashFiles('scripts/build_minimal_vtk.sh') }}
 
       # Run unconditionally, cache hit or not: the script is idempotent and returns
-      # immediately when VTK is already installed. Its last stdout line is the cmake
-      # config directory in both cases, so take VTK_DIR from there rather than
-      # duplicating the version and path here — a VTK bump would otherwise need edits
-      # in two places, and the stale one would only show up as a configure failure.
+      # immediately when VTK is already installed. It prints the cmake config
+      # directory — and nothing else — on stdout, so VTK_DIR is taken from there
+      # rather than duplicating the version and path here.
+      #
+      # The capture is its own statement under `set -e` deliberately. Written as
+      # `echo "VTK_DIR=$(./scripts/build_minimal_vtk.sh)" >> $GITHUB_ENV`, a VTK
+      # build that died would still leave `echo` succeeding: the step goes GREEN,
+      # VTK_DIR holds whatever was printed last, and the real failure surfaces two
+      # steps later as an opaque find_package error. As an assignment, `set -e`
+      # aborts here, where the log is.
       - name: Build minimal VTK (no-op on cache hit) and export VTK_DIR
-        run: echo "VTK_DIR=$(./scripts/build_minimal_vtk.sh | tail -1)" >> $GITHUB_ENV
+        run: |
+          set -euo pipefail
+          vtk_dir=$(./scripts/build_minimal_vtk.sh)
+          echo "VTK_DIR=$vtk_dir" >> "$GITHUB_ENV"
 
       - uses: actions/cache@v4
         with:
@@ -108,11 +129,28 @@ jobs:
       - name: Build (bootstrap fetches duckdb itself)
         run: make release
 
-      - name: Corpus integrity
-        # Block scalar: the inline form would break YAML parsing on the ": " inside
-        # the grep pattern.
+      # DuckDB's own CodeQuality workflow pins clang_format==11.0.1, and different
+      # clang-format versions disagree materially, so the version is pinned here too.
+      # This checks only src/ with the repo's .clang-format (a symlink into the duckdb
+      # submodule), rather than going through duckdb's format.py, which additionally
+      # requires black and cmake-format to lint files we do not own.
+      - name: Formatting (clang-format 11.0.1, the version DuckDB pins)
         run: |
-          cd test/data && sha256sum -c MANIFEST.sha256 | { grep -v ': OK$' || true; }
+          set -euo pipefail
+          pipx install clang-format==11.0.1 2>/dev/null || pip install --user --quiet clang_format==11.0.1
+          fail=0
+          for f in src/*.cpp src/*/*.cpp src/include/*.hpp src/include/*/*.hpp; do
+            [ -f "$f" ] || continue
+            if ! clang-format --sort-includes=0 -style=file "$f" | diff -u "$f" - ; then fail=1; fi
+          done
+          [ "$fail" -eq 0 ] || { echo "::error::run 'make format-fix' (or clang-format -i) and commit"; exit 1; }
+
+      - name: Corpus integrity
+        # `sha256sum -c` exits 1 on a mismatch, and that status must reach the step.
+        # This used to pipe into `{ grep -v ": OK$" || true; }`, which discarded the
+        # status outright: a corrupted corpus produced a GREEN step. --quiet prints
+        # only the FAILED lines, so the filtering it was doing is unnecessary.
+        run: cd test/data && sha256sum -c --quiet MANIFEST.sha256
 
       - name: Version shim (2x2 compile matrix)
         run: make check-api-compat
@@ -123,6 +161,14 @@ jobs:
       - name: SQL invariants
         run: ./scripts/run_invariants.sh
 
+      # The in-memory parse path is what every remote (https/s3/...) read uses. It is
+      # otherwise reachable only with a filesystem extension loaded, so nothing in CI
+      # exercised it and test/sql/remote.test was the permanently-skipped test in
+      # every run. DUCK_VTK_FORCE_MEMORY_READ reroutes local reads through it, which
+      # makes the whole corpus a test of that path.
+      - name: In-memory parse path (the route remote files take)
+        run: make test-memory-reads
+
       - name: Smoke
         run: BUILD_MODE=release ./scripts/smoke.sh
 
@@ -132,6 +178,11 @@ jobs:
   cold-boot:
     name: cold boot (Docker, VTK from source)
     runs-on: ubuntu-24.04
+    # Builds VTK and DuckDB from scratch with no cache at all; ~40 min is normal.
+    # NOTE: the `distribution` job below cannot carry a timeout — GitHub does not
+    # allow `timeout-minutes` on a job that is a `uses:` call — so its bound lives
+    # upstream in extension-ci-tools.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:

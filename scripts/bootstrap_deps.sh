@@ -66,6 +66,33 @@ DUCKDB_GIT_MIRROR="${DUCKDB_GIT_MIRROR:-}"
 CITOOLS_GIT_MIRROR="${CITOOLS_GIT_MIRROR:-}"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*" >&2; }
+
+# Fetch one commit, retrying over HTTP/1.1.
+#
+# duckdb is a ~500 MB fetch and GitHub's HTTP/2 transport drops it on a slow or
+# lossy link. Observed here, repeatedly:
+#   error: RPC failed; curl 92 HTTP/2 stream 5 was not closed cleanly: CANCEL (err 8)
+#   fetch-pack: unexpected disconnect while reading sideband packet
+#   fatal: early EOF
+# It is not a corrupt remote and not a bad SHA — a plain retry with
+# http.version=HTTP/1.1 succeeds. scripts/build_minimal_vtk.sh already passes
+# curl --http1.1 for the same reason against vtk.org.
+#
+# A partial fetch leaves the repository usable, so retrying in place is safe; the
+# requested SHA still has to resolve afterwards, which is checked by the caller.
+fetch_commit() {
+  local dir="$1" sha="$2" attempt
+  for attempt in 1 2 3; do
+    if [[ $attempt -eq 1 ]]; then
+      git -C "$dir" fetch -q --depth 1 origin "$sha" && return 0
+    else
+      info "fetch attempt $attempt (HTTP/1.1)"
+      git -C "$dir" -c http.version=HTTP/1.1 -c http.postBuffer=524288000 \
+          fetch -q --depth 1 origin "$sha" && return 0
+    fi
+  done
+  return 1
+}
 ok()   { printf '\033[1;32m  ok\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -104,7 +131,7 @@ bootstrap() {
   git -C "$dir" init -q                                  || die "git init failed in $dir"
   git -C "$dir" remote add origin "$url"                 || die "could not add remote for $dir"
   # Fetch only the pinned commit: duckdb's full history is ~1 GB.
-  git -C "$dir" fetch -q --depth 1 origin "$sha"         || die "could not fetch $sha from $url"
+  fetch_commit "$dir" "$sha"                             || die "could not fetch $sha from $url"
   git -C "$dir" checkout -q FETCH_HEAD                   || die "could not check out $sha in $dir"
   [[ -e "$marker" ]] || die "$dir was fetched but $marker is still missing"
   ok "$dir at $(git -C "$dir" rev-parse --short HEAD)"
